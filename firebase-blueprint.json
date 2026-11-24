@@ -1,0 +1,604 @@
+{
+  "entities": {
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Authorized Gold AI Trader administrator record.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 3,
+          "maxLength": 180
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["uid", "email", "createdAt", "updatedAt"]
+    },
+    "PublicConfig": {
+      "title": "PublicConfig",
+      "description": "Mobile Money recipient numbers and subscription plan pricing managed by admin.",
+      "type": "object",
+      "properties": {
+        "momo": {
+          "type": "object",
+          "description": "Airtel MoMo, MTN MoMo, recipient name, and WhatsApp renewal number."
+        },
+        "plans": {
+          "type": "object",
+          "description": "Weekly, monthly, and quarterly pricing in ZMW and USD."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["momo", "plans", "updatedAt"]
+    },
+    "TraderAccount": {
+      "title": "TraderAccount",
+      "description": "Core trader account, broker setup, subscription state, strategy settings, and daily session levels.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "appUserId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "brokerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "brokerServer": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "mt5Login": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "accountType": {
+          "type": "string",
+          "enum": ["Demo", "Live"],
+          "maxLength": 16
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "ACTIVE", "EXPIRED", "BLOCKED"],
+          "maxLength": 16
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["weekly", "monthly", "quarterly"],
+          "maxLength": 16
+        },
+        "amountKwacha": {
+          "type": "number"
+        },
+        "amountUsd": {
+          "type": "number"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["Airtel MoMo", "MTN MoMo"],
+          "maxLength": 24
+        },
+        "transactionId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "submittedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "approvedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "expiresAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "feedAccess": {
+          "type": "boolean"
+        },
+        "autoTradeEnabled": {
+          "type": "boolean"
+        },
+        "brokerConnected": {
+          "type": "boolean"
+        },
+        "balance": {
+          "type": "number"
+        },
+        "equity": {
+          "type": "number"
+        },
+        "brokerSetup": {
+          "type": "object",
+          "description": "Structured MT5 multi-broker setup checklist and account variant (Standard, Cent USD/USC, ECN/Raw)."
+        },
+        "settings": {
+          "type": "object",
+          "description": "User strategy and risk parameters including strategyMode (EMA_STOCHASTIC_PRO) and emaPro settings."
+        },
+        "levels": {
+          "type": "object",
+          "description": "Current Lusaka day PDH/PDL and session trade counters."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "appUserId",
+        "fullName",
+        "brokerName",
+        "brokerServer",
+        "mt5Login",
+        "accountType",
+        "status",
+        "plan",
+        "amountKwacha",
+        "amountUsd",
+        "paymentMethod",
+        "transactionId",
+        "submittedAt",
+        "feedAccess",
+        "autoTradeEnabled",
+        "brokerConnected",
+        "balance",
+        "equity",
+        "brokerSetup",
+        "settings",
+        "levels",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TraderPrivateInfo": {
+      "title": "TraderPrivateInfo",
+      "description": "Isolated PII and private credential metadata belonging strictly to a single trader.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "normalizedPhone": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "email": {
+          "type": "string",
+          "maxLength": 180
+        },
+        "passwordHash": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "brokerApiKeyLast4": {
+          "type": "string",
+          "maxLength": 8
+        },
+        "hasBrokerApiKey": {
+          "type": "boolean"
+        },
+        "brokerBridgeUrl": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "hasScreenshot": {
+          "type": "boolean"
+        },
+        "lastBalanceSyncAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "balanceSyncSource": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "phone",
+        "normalizedPhone",
+        "email",
+        "passwordHash",
+        "brokerApiKeyLast4",
+        "hasBrokerApiKey",
+        "brokerBridgeUrl",
+        "hasScreenshot",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "TradeRecord": {
+      "title": "TradeRecord",
+      "description": "Executed or signaled Gold AI Trader trade entry under a trader account.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "signalId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "orderId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "dateLusaka": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "timeLusaka": {
+          "type": "string",
+          "maxLength": 16
+        },
+        "timestamp": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "closedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "session": {
+          "type": "string",
+          "enum": ["ASIAN_SESSION", "LONDON_SESSION", "NEW_YORK_SESSION", "ALL_SESSIONS"],
+          "maxLength": 24
+        },
+        "strategyModule": {
+          "type": "string",
+          "enum": ["EMA_STOCHASTIC_PRO"],
+          "maxLength": 24
+        },
+        "marketCondition": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "symbol": {
+          "type": "string",
+          "maxLength": 24
+        },
+        "side": {
+          "type": "string",
+          "enum": ["BUY", "SELL"],
+          "maxLength": 8
+        },
+        "entry": {
+          "type": "number"
+        },
+        "stop": {
+          "type": "number"
+        },
+        "tp1": {
+          "type": "number"
+        },
+        "tp2": {
+          "type": "number"
+        },
+        "tp3": {
+          "type": "number"
+        },
+        "target": {
+          "type": "number"
+        },
+        "tp1Hit": {
+          "type": "boolean"
+        },
+        "tp2Hit": {
+          "type": "boolean"
+        },
+        "tp1RealizedPnl": {
+          "type": "number"
+        },
+        "tp2RealizedPnl": {
+          "type": "number"
+        },
+        "breakevenMoved": {
+          "type": "boolean"
+        },
+        "rrRatio": {
+          "type": "number"
+        },
+        "lots": {
+          "type": "number"
+        },
+        "riskDollars": {
+          "type": "number"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["SIGNALED", "OPEN", "TP_HIT", "SL_HIT", "CLOSED"],
+          "maxLength": 16
+        },
+        "executionStatus": {
+          "type": "string",
+          "enum": ["SIGNAL_ONLY", "SUBMITTED", "FILLED", "REJECTED", "DEMO_SIMULATED", "EXECUTION_UNAVAILABLE"],
+          "maxLength": 32
+        },
+        "exitPrice": {
+          "type": "number"
+        },
+        "pnlDollars": {
+          "type": "number"
+        },
+        "commissionDollars": {
+          "type": "number"
+        },
+        "swapDollars": {
+          "type": "number"
+        },
+        "slippagePips": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 600
+        },
+        "setupStatus": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "executionMode": {
+          "type": "string",
+          "enum": ["AUTO", "MANUAL"],
+          "maxLength": 16
+        },
+        "feedSource": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "brokerName": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "balanceBefore": {
+          "type": "number"
+        },
+        "balanceAfter": {
+          "type": "number"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "id",
+        "dateLusaka",
+        "timeLusaka",
+        "timestamp",
+        "session",
+        "symbol",
+        "side",
+        "entry",
+        "stop",
+        "target",
+        "rrRatio",
+        "lots",
+        "riskDollars",
+        "status",
+        "notes",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PaymentProof": {
+      "title": "PaymentProof",
+      "description": "Mobile Money subscription payment submission record.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "plan": {
+          "type": "string",
+          "enum": ["weekly", "monthly", "quarterly"],
+          "maxLength": 16
+        },
+        "amountKwacha": {
+          "type": "number"
+        },
+        "amountUsd": {
+          "type": "number"
+        },
+        "paymentMethod": {
+          "type": "string",
+          "enum": ["Airtel MoMo", "MTN MoMo"],
+          "maxLength": 24
+        },
+        "transactionId": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "APPROVED", "REJECTED"],
+          "maxLength": 16
+        },
+        "recordedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "ownerId",
+        "id",
+        "plan",
+        "amountKwacha",
+        "amountUsd",
+        "paymentMethod",
+        "transactionId",
+        "status",
+        "recordedAt",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminMasterConfig": {
+      "title": "AdminMasterConfig",
+      "description": "Admin-only encrypted Master TickerAll proxy feed configuration and persistent connection state.",
+      "type": "object",
+      "properties": {
+        "baseUrl": { "type": "string", "maxLength": 200 },
+        "brokerServer": { "type": "string", "maxLength": 120 },
+        "mt5AccountNumber": { "type": "string", "maxLength": 64 },
+        "apiKeyLast4": { "type": "string", "maxLength": 8 },
+        "hasMasterKey": { "type": "boolean" },
+        "hasMasterPassword": { "type": "boolean" },
+        "apiKeyEnc": { "type": "string", "maxLength": 1024 },
+        "passwordEnc": { "type": "string", "maxLength": 1024 },
+        "quotaUsed": { "type": "number" },
+        "desiredConnected": { "type": "boolean" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "baseUrl",
+        "brokerServer",
+        "mt5AccountNumber",
+        "apiKeyLast4",
+        "hasMasterKey",
+        "hasMasterPassword",
+        "apiKeyEnc",
+        "passwordEnc",
+        "quotaUsed",
+        "desiredConnected",
+        "updatedAt"
+      ]
+    },
+    "ConnectionProbe": {
+      "title": "ConnectionProbe",
+      "description": "Read-only connection verification document used at startup.",
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["ok", "updatedAt"]
+    }
+  },
+  "firestore": {
+    "/admins/{adminId}": {
+      "schema": { "$ref": "#/entities/AdminRole" },
+      "description": "Admin role grant documents for elevated management access."
+    },
+    "/config/{configId}": {
+      "schema": { "$ref": "#/entities/PublicConfig" },
+      "description": "Shared public MoMo payment numbers and subscription plan pricing."
+    },
+    "/adminConfig/{configId}": {
+      "schema": { "$ref": "#/entities/AdminMasterConfig" },
+      "description": "Admin-only persistent Master TickerAll proxy feed details and desired connection state."
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/TraderAccount" },
+      "description": "Persisted trader accounts, subscription statuses, broker setup, and strategy state."
+    },
+    "/users/{userId}/private/{docId}": {
+      "schema": { "$ref": "#/entities/TraderPrivateInfo" },
+      "description": "Isolated PII (phone numbers, email, password hash, broker key metadata) restricted to owner and admin."
+    },
+    "/users/{userId}/trades/{tradeId}": {
+      "schema": { "$ref": "#/entities/TradeRecord" },
+      "description": "Individual trader trade log documents persisted per user."
+    },
+    "/users/{userId}/payments/{paymentId}": {
+      "schema": { "$ref": "#/entities/PaymentProof" },
+      "description": "Subscription Mobile Money payment records under each trader."
+    },
+    "/test/{testId}": {
+      "schema": { "$ref": "#/entities/ConnectionProbe" },
+      "description": "Startup Firestore connectivity probe document."
+    }
+  }
+}

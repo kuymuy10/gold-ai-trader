@@ -1,0 +1,6 @@
+{
+  "name": "Gold AI Trader",
+  "description": "Gold AI Trader using EMA STOCHASTIC PRO for XAUUSD/GOLD: H1/M15/M5 EMA 9/21/50/200, Stochastic (14,3,3), non-repainting Smart Money Concepts (SMC), Lusaka sessions, ±1h USD news filter, Gemini AI Trade Approver, and XM MT5 via TickerAll.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

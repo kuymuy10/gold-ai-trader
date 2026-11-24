@@ -1,0 +1,502 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Pillar 4.1: Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED HELPERS ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isRootAdminToken() {
+      return isVerifiedUser()
+        && request.auth.token.email is string
+        && request.auth.token.email.lower() == 'muyobakuyewana@gmail.com';
+    }
+
+    function isAdmin() {
+      return isRootAdminToken() ||
+        (isVerifiedUser() && exists(/databases/$(database)/documents/admins/$(request.auth.uid)));
+    }
+
+    function isValidAdminRole(data, adminId) {
+      return data.keys().hasAll(['uid', 'email', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['uid', 'email', 'createdAt', 'updatedAt'])
+        && isValidId(data.uid)
+        && data.uid == adminId
+        && data.email is string && data.email.size() >= 3 && data.email.size() <= 180
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlanSpec(spec) {
+      return spec is map
+        && spec.keys().hasAll(['label', 'kwacha', 'usd', 'days'])
+        && spec.keys().hasOnly(['label', 'kwacha', 'usd', 'days'])
+        && spec.label is string && spec.label.size() >= 1 && spec.label.size() <= 40
+        && spec.kwacha is number && spec.kwacha >= 0
+        && spec.usd is number && spec.usd >= 0
+        && spec.days is number && spec.days >= 1 && spec.days <= 366;
+    }
+
+    function isValidPublicConfig(data) {
+      return data.keys().hasAll(['momo', 'plans', 'updatedAt'])
+        && data.keys().hasOnly(['momo', 'plans', 'updatedAt'])
+        && data.momo is map
+        && data.momo.keys().hasAll(['airtelNumber', 'mtnNumber', 'recipientName', 'whatsappRenewNumber'])
+        && data.momo.keys().hasOnly(['airtelNumber', 'mtnNumber', 'recipientName', 'whatsappRenewNumber'])
+        && data.momo.airtelNumber is string && data.momo.airtelNumber.size() <= 40
+        && data.momo.mtnNumber is string && data.momo.mtnNumber.size() <= 40
+        && data.momo.recipientName is string && data.momo.recipientName.size() <= 120
+        && data.momo.whatsappRenewNumber is string && data.momo.whatsappRenewNumber.size() <= 40
+        && data.plans is map
+        && data.plans.keys().hasAll(['weekly', 'monthly', 'quarterly'])
+        && data.plans.keys().hasOnly(['weekly', 'monthly', 'quarterly'])
+        && isValidPlanSpec(data.plans.weekly)
+        && isValidPlanSpec(data.plans.monthly)
+        && isValidPlanSpec(data.plans.quarterly)
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidAdminMasterConfig(data) {
+      return data.keys().hasAll([
+          'baseUrl', 'brokerServer', 'mt5AccountNumber', 'apiKeyLast4',
+          'hasMasterKey', 'hasMasterPassword', 'apiKeyEnc', 'passwordEnc',
+          'quotaUsed', 'desiredConnected', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'baseUrl', 'brokerServer', 'mt5AccountNumber', 'apiKeyLast4',
+          'hasMasterKey', 'hasMasterPassword', 'apiKeyEnc', 'passwordEnc',
+          'quotaUsed', 'desiredConnected', 'updatedAt'
+        ])
+        && data.baseUrl is string && data.baseUrl.size() <= 200
+        && data.brokerServer is string && data.brokerServer.size() <= 120
+        && data.mt5AccountNumber is string && data.mt5AccountNumber.size() <= 64
+        && data.apiKeyLast4 is string && data.apiKeyLast4.size() <= 8
+        && data.hasMasterKey is bool
+        && data.hasMasterPassword is bool
+        && data.apiKeyEnc is string && data.apiKeyEnc.size() <= 1024
+        && data.passwordEnc is string && data.passwordEnc.size() <= 1024
+        && data.quotaUsed is number && data.quotaUsed >= 0
+        && data.desiredConnected is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidBrokerSetup(setup) {
+      return setup is map
+        && setup.size() >= 7 && setup.size() <= 10
+        && setup.platformMt5 is bool
+        && setup.accountStandard is bool
+        && setup.currencyUsd is bool
+        && setup.leverageValid is bool;
+    }
+
+    function isValidEmaProConfig(ema) {
+      return ema is map
+        && ema.size() <= 60
+        && ema.xauusdSymbol is string && ema.xauusdSymbol.size() >= 1 && ema.xauusdSymbol.size() <= 24
+        && (!('spreadSensitivity' in ema) || ema.spreadSensitivity in ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'])
+        && (!('allowHighSpreadTrades' in ema) || ema.allowHighSpreadTrades is bool)
+        && ema.tradingMode in ['SIGNALS_ONLY', 'AUTOMATIC_TRADING', 'BOTH']
+        && ema.tradingRunState in ['RUNNING', 'PAUSED', 'STOPPED', 'EMERGENCY_STOP'];
+    }
+
+    function isValidStrategySettings(settings) {
+      return settings is map
+        && settings.size() >= 15 && settings.size() <= 20
+        && (!('strategyMode' in settings) || settings.strategyMode == 'EMA_STOCHASTIC_PRO')
+        && settings.slPips is number && settings.riskPercent is number
+        && settings.newsEvents is list && settings.newsEvents.size() <= 30
+        && (!('emaPro' in settings) || isValidEmaProConfig(settings.emaPro));
+    }
+
+    function isValidDayLevels(levels) {
+      return levels is map
+        && levels.size() == 13
+        && levels.dateLusaka is string && levels.dateLusaka.size() <= 16
+        && levels.totalTradesToday is number
+        && levels.manualOverride is bool;
+    }
+
+    function isValidTraderAccount(data, userId) {
+      return data.keys().hasOnly([
+          'ownerId', 'appUserId', 'fullName', 'brokerName', 'brokerServer',
+          'mt5Login', 'accountType', 'status', 'plan', 'amountKwacha',
+          'amountUsd', 'paymentMethod', 'transactionId', 'submittedAt',
+          'approvedAt', 'expiresAt', 'feedAccess', 'autoTradeEnabled',
+          'brokerConnected', 'balance', 'equity', 'brokerSetup', 'settings',
+          'levels', 'createdAt', 'updatedAt'
+        ])
+        && data.size() == 26
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && isValidId(data.appUserId)
+        && data.fullName is string && data.fullName.size() >= 1 && data.fullName.size() <= 120
+        && data.brokerName is string && data.brokerName.size() >= 1 && data.brokerName.size() <= 80
+        && data.brokerServer is string && data.brokerServer.size() <= 120
+        && data.mt5Login is string && data.mt5Login.size() >= 1 && data.mt5Login.size() <= 64
+        && data.accountType in ['Demo', 'Live']
+        && data.status in ['PENDING', 'ACTIVE', 'EXPIRED', 'BLOCKED']
+        && data.plan in ['weekly', 'monthly', 'quarterly']
+        && data.amountKwacha is number && data.amountKwacha >= 0
+        && data.amountUsd is number && data.amountUsd >= 0
+        && data.paymentMethod in ['Airtel MoMo', 'MTN MoMo']
+        && data.transactionId is string && data.transactionId.size() <= 120
+        && data.submittedAt is string && data.submittedAt.size() <= 64
+        && (data.approvedAt == null || (data.approvedAt is string && data.approvedAt.size() <= 64))
+        && (data.expiresAt == null || (data.expiresAt is string && data.expiresAt.size() <= 64))
+        && data.feedAccess is bool && data.autoTradeEnabled is bool && data.brokerConnected is bool
+        && data.balance is number && data.balance >= 0
+        && data.equity is number && data.equity >= 0
+        && isValidBrokerSetup(data.brokerSetup)
+        && isValidStrategySettings(data.settings)
+        && isValidDayLevels(data.levels)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTraderPrivateInfo(data, userId) {
+      return data.keys().hasAll([
+          'ownerId', 'phone', 'normalizedPhone', 'email', 'passwordHash',
+          'brokerApiKeyLast4', 'hasBrokerApiKey', 'brokerBridgeUrl',
+          'hasScreenshot', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'phone', 'normalizedPhone', 'email', 'passwordHash',
+          'brokerApiKeyLast4', 'hasBrokerApiKey', 'brokerBridgeUrl',
+          'hasScreenshot', 'lastBalanceSyncAt', 'balanceSyncSource',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && data.phone is string && data.phone.size() >= 4 && data.phone.size() <= 32
+        && data.normalizedPhone is string && data.normalizedPhone.size() >= 4 && data.normalizedPhone.size() <= 32
+        && data.email is string && data.email.size() <= 180
+        && data.passwordHash is string && data.passwordHash.size() <= 256
+        && data.brokerApiKeyLast4 is string && data.brokerApiKeyLast4.size() <= 8
+        && data.hasBrokerApiKey is bool
+        && data.brokerBridgeUrl is string && data.brokerBridgeUrl.size() <= 300
+        && data.hasScreenshot is bool
+        && (!('lastBalanceSyncAt' in data) || data.lastBalanceSyncAt == null || (data.lastBalanceSyncAt is string && data.lastBalanceSyncAt.size() <= 64))
+        && (!('balanceSyncSource' in data) || data.balanceSyncSource == null || (data.balanceSyncSource is string && data.balanceSyncSource.size() <= 32))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidTradeRecord(data, userId, tradeId) {
+      return data.keys().hasAll([
+          'ownerId', 'id', 'dateLusaka', 'timeLusaka', 'timestamp',
+          'session', 'symbol', 'side', 'entry', 'stop', 'target',
+          'rrRatio', 'lots', 'riskDollars', 'status', 'notes',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'id', 'signalId', 'orderId', 'dateLusaka', 'timeLusaka',
+          'timestamp', 'closedAt', 'session', 'strategyModule', 'marketCondition',
+          'symbol', 'side', 'entry', 'stop', 'tp1', 'tp2', 'tp3',
+          'target', 'tp1Hit', 'tp2Hit', 'tp1RealizedPnl', 'tp2RealizedPnl',
+          'breakevenMoved', 'rrRatio', 'lots', 'riskDollars', 'status',
+          'executionStatus', 'exitPrice', 'pnlDollars', 'commissionDollars',
+          'swapDollars', 'slippagePips', 'notes', 'setupStatus', 'executionMode',
+          'feedSource', 'brokerName', 'balanceBefore', 'balanceAfter',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && isValidId(data.id)
+        && data.id == tradeId
+        && data.dateLusaka is string && data.dateLusaka.size() <= 16
+        && data.timeLusaka is string && data.timeLusaka.size() <= 16
+        && data.timestamp is string && data.timestamp.size() <= 64
+        && data.session in ['ASIAN_SESSION', 'LONDON_SESSION', 'NEW_YORK_SESSION', 'ALL_SESSIONS']
+        && (!('strategyModule' in data) || data.strategyModule == 'EMA_STOCHASTIC_PRO')
+        && data.symbol is string && data.symbol.size() <= 24
+        && data.side in ['BUY', 'SELL']
+        && data.entry is number && data.stop is number && data.target is number
+        && data.rrRatio is number && data.lots is number && data.riskDollars is number
+        && data.status in ['SIGNALED', 'OPEN', 'TP_HIT', 'SL_HIT', 'CLOSED']
+        && data.notes is string && data.notes.size() <= 600
+        && (!('signalId' in data) || (data.signalId is string && data.signalId.size() <= 128))
+        && (!('orderId' in data) || data.orderId == null || (data.orderId is string && data.orderId.size() <= 128))
+        && (!('closedAt' in data) || data.closedAt == null || (data.closedAt is string && data.closedAt.size() <= 64))
+        && (!('setupStatus' in data) || (data.setupStatus is string && data.setupStatus.size() <= 120))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPaymentProof(data, userId, paymentId) {
+      return data.keys().hasAll([
+          'ownerId', 'id', 'plan', 'amountKwacha', 'amountUsd',
+          'paymentMethod', 'transactionId', 'status', 'recordedAt',
+          'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'id', 'plan', 'amountKwacha', 'amountUsd',
+          'paymentMethod', 'transactionId', 'status', 'recordedAt',
+          'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == userId
+        && isValidId(data.id)
+        && data.id == paymentId
+        && data.plan is string && data.plan.size() <= 16 && (data.plan == 'weekly' || data.plan == 'monthly' || data.plan == 'quarterly')
+        && data.amountKwacha is number && data.amountKwacha >= 0
+        && data.amountUsd is number && data.amountUsd >= 0
+        && data.paymentMethod is string && data.paymentMethod.size() <= 24 && (data.paymentMethod == 'Airtel MoMo' || data.paymentMethod == 'MTN MoMo')
+        && data.transactionId is string && data.transactionId.size() <= 120
+        && data.status is string && data.status.size() <= 16 && (data.status == 'PENDING' || data.status == 'APPROVED' || data.status == 'REJECTED')
+        && data.recordedAt is string && data.recordedAt.size() <= 64
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // --- COLLECTIONS ---
+
+    match /test/{testId} {
+      allow get: if isValidId(testId) && isSignedIn() && testId == 'connection';
+    }
+
+    match /admins/{adminId} {
+      allow get: if isValidId(adminId) && (isOwner(adminId) || isAdmin());
+      allow create: if isValidId(adminId)
+        && isValidAdminRole(incoming(), adminId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && isRootAdminToken()
+        && request.auth.uid == adminId;
+      allow update: if isValidId(adminId)
+        && isValidAdminRole(incoming(), adminId)
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && isRootAdminToken()
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'updatedAt']);
+    }
+
+    match /config/{configId} {
+      allow get: if isValidId(configId) && configId == 'public';
+      allow create: if isValidId(configId)
+        && configId == 'public'
+        && isValidPublicConfig(incoming())
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow update: if isValidId(configId)
+        && configId == 'public'
+        && isValidPublicConfig(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['momo', 'plans', 'updatedAt'])
+        && isAdmin();
+    }
+
+    match /adminConfig/{configId} {
+      allow get: if isValidId(configId) && configId == 'master' && isAdmin();
+      allow create: if isValidId(configId)
+        && configId == 'master'
+        && isValidAdminMasterConfig(incoming())
+        && incoming().updatedAt == request.time
+        && isAdmin();
+      allow update: if isValidId(configId)
+        && configId == 'master'
+        && isValidAdminMasterConfig(incoming())
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'baseUrl', 'brokerServer', 'mt5AccountNumber', 'apiKeyLast4',
+          'hasMasterKey', 'hasMasterPassword', 'apiKeyEnc', 'passwordEnc',
+          'quotaUsed', 'desiredConnected', 'updatedAt'
+        ])
+        && isAdmin();
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isAdmin() || (isVerifiedUser() && existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidTraderAccount(incoming(), userId)
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time
+        && (
+          isAdmin() ||
+          (
+            request.auth.uid == userId
+            && incoming().status == 'PENDING'
+            && incoming().feedAccess == false
+            && incoming().autoTradeEnabled == false
+            && incoming().approvedAt == null
+            && incoming().expiresAt == null
+          )
+        );
+
+      allow update: if isVerifiedUser()
+        && isValidId(userId)
+        && isValidTraderAccount(incoming(), userId)
+        && (!('ownerId' in existing()) || incoming().ownerId == existing().ownerId)
+        && (!('appUserId' in existing()) || incoming().appUserId == existing().appUserId)
+        && (('createdAt' in existing() && existing().createdAt is timestamp) ? incoming().createdAt == existing().createdAt : incoming().createdAt == request.time)
+        && incoming().updatedAt == request.time
+        && (
+          (
+            isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName', 'brokerName', 'brokerServer', 'mt5Login', 'accountType',
+              'status', 'plan', 'amountKwacha', 'amountUsd', 'paymentMethod',
+              'transactionId', 'submittedAt', 'approvedAt', 'expiresAt',
+              'feedAccess', 'autoTradeEnabled', 'brokerConnected', 'balance',
+              'equity', 'brokerSetup', 'settings', 'levels', 'updatedAt'
+            ])
+          ) ||
+          (
+            // Action: Trader runtime broker/strategy/balance/autoTrade sync (never escalates status/feedAccess)
+            isOwner(userId)
+            && (!('status' in existing()) || existing().status != 'BLOCKED')
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'brokerName', 'brokerServer', 'mt5Login', 'accountType',
+              'autoTradeEnabled', 'brokerConnected', 'balance', 'equity',
+              'brokerSetup', 'settings', 'levels', 'updatedAt'
+            ])
+          ) ||
+          (
+            // Action: Trader subscription renewal submission (forces status back to PENDING)
+            isOwner(userId)
+            && (!('status' in existing()) || existing().status != 'BLOCKED')
+            && incoming().status == 'PENDING'
+            && incoming().feedAccess == false
+            && incoming().autoTradeEnabled == false
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'status', 'plan', 'amountKwacha', 'amountUsd', 'paymentMethod',
+              'transactionId', 'submittedAt', 'feedAccess', 'autoTradeEnabled',
+              'updatedAt'
+            ])
+          )
+        );
+
+      allow delete: if isValidId(userId)
+        && (isAdmin() || (isOwner(userId) && (!('status' in existing()) || existing().status != 'BLOCKED')));
+
+      match /private/{docId} {
+        allow get: if isValidId(userId) && isValidId(docId) && (isOwner(userId) || isAdmin());
+        allow list: if isOwner(userId) || isAdmin();
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(docId)
+          && docId == 'profile'
+          && isValidTraderPrivateInfo(incoming(), userId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && (isOwner(userId) || isAdmin());
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(docId)
+          && docId == 'profile'
+          && isValidTraderPrivateInfo(incoming(), userId)
+          && (!('ownerId' in existing()) || incoming().ownerId == existing().ownerId)
+          && (('createdAt' in existing() && existing().createdAt is timestamp) ? incoming().createdAt == existing().createdAt : incoming().createdAt == request.time)
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && (isOwner(userId) || isAdmin())
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'phone', 'normalizedPhone', 'email', 'passwordHash',
+            'brokerApiKeyLast4', 'hasBrokerApiKey', 'brokerBridgeUrl',
+            'hasScreenshot', 'lastBalanceSyncAt', 'balanceSyncSource',
+            'updatedAt'
+          ]);
+
+        allow delete: if isValidId(userId)
+          && isValidId(docId)
+          && docId == 'profile'
+          && (isOwner(userId) || isAdmin());
+      }
+
+      match /trades/{tradeId} {
+        allow get: if isValidId(userId) && isValidId(tradeId) && (isOwner(userId) || isAdmin());
+        allow list: if isOwner(userId) || isAdmin();
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(tradeId)
+          && isValidTradeRecord(incoming(), userId, tradeId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && (isOwner(userId) || isAdmin());
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(tradeId)
+          && isValidTradeRecord(incoming(), userId, tradeId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().id == existing().id
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && (isOwner(userId) || isAdmin())
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'orderId', 'closedAt', 'stop', 'tp1', 'tp2', 'tp3', 'target',
+            'tp1Hit', 'tp2Hit', 'tp1RealizedPnl', 'tp2RealizedPnl',
+            'breakevenMoved', 'status', 'executionStatus', 'exitPrice',
+            'pnlDollars', 'commissionDollars', 'swapDollars', 'slippagePips',
+            'notes', 'balanceAfter', 'updatedAt'
+          ]);
+
+        allow delete: if isValidId(userId) && isValidId(tradeId) && (isOwner(userId) || isAdmin());
+      }
+
+      match /payments/{paymentId} {
+        allow get: if isValidId(userId) && isValidId(paymentId) && (isOwner(userId) || isAdmin());
+        allow list: if isOwner(userId) || isAdmin();
+
+        allow create: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(paymentId)
+          && isValidPaymentProof(incoming(), userId, paymentId)
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && (
+            isAdmin() ||
+            (isOwner(userId) && incoming().status == 'PENDING')
+          );
+
+        allow update: if isVerifiedUser()
+          && isValidId(userId)
+          && isValidId(paymentId)
+          && isValidPaymentProof(incoming(), userId, paymentId)
+          && incoming().ownerId == existing().ownerId
+          && incoming().id == existing().id
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && exists(/databases/$(database)/documents/users/$(userId))
+          && existing().status == 'PENDING'
+          && isAdmin()
+          && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      }
+    }
+  }
+}
