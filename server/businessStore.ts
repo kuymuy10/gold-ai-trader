@@ -24,14 +24,46 @@ import type {
   PlanPricing,
   RiskEventRecord,
   SignalHistoryEntry,
+  SignalSourceMode,
   StrategySettings,
   SubscriptionPlan,
+  TelegramChannelMessage,
   TradeLogEntry,
   TradeOrderRecord,
   UserPublicProfile,
   UserStatus,
   UserSyncBundle,
 } from '../src/types/connectivity.ts';
+
+export interface StoredTelegramConfig {
+  apiId: string;
+  apiHashEnc: string;
+  apiHashLast4: string;
+  phoneNumber: string;
+  channelTarget: string;
+  resolvedChannelId: string | null;
+  resolvedChannelTitle: string | null;
+  sessionStringEnc: string;
+  autoExecuteSignals: boolean;
+  signalSource?: SignalSourceMode;
+  desiredListening: boolean;
+}
+
+export function createEmptyTelegramConfig(): StoredTelegramConfig {
+  return {
+    apiId: '',
+    apiHashEnc: '',
+    apiHashLast4: '',
+    phoneNumber: '',
+    channelTarget: '',
+    resolvedChannelId: null,
+    resolvedChannelTitle: null,
+    sessionStringEnc: '',
+    autoExecuteSignals: true,
+    signalSource: 'BOTH',
+    desiredListening: false,
+  };
+}
 
 const DATA_DIR = path.resolve(process.cwd(), 'data');
 const STORE_PATH = path.join(DATA_DIR, 'business-store.json');
@@ -330,6 +362,8 @@ export interface StoredUser {
   spreadRejectedCountToday?: number;
   acceptedAbove45CountToday?: number;
   lastAiApproval?: AiTradeApproval | null;
+  telegramConfig?: StoredTelegramConfig;
+  telegramMessages?: TelegramChannelMessage[];
   firebaseUid?: string | null;
   firebaseEmail?: string | null;
   pinResetCodeHash?: string | null;
@@ -672,6 +706,14 @@ function loadStoreFromDisk(): BusinessStoreData {
         if (u.autoTradeEnabled) {
           u.autoTradeEnabled = false;
         }
+        dirty = true;
+      }
+      if (!u.telegramConfig) {
+        u.telegramConfig = createEmptyTelegramConfig();
+        dirty = true;
+      }
+      if (!Array.isArray(u.telegramMessages)) {
+        u.telegramMessages = [];
         dirty = true;
       }
     }
@@ -1421,6 +1463,8 @@ export function upsertUserFromSyncBundle(
     processedHistoryIds: [],
     processedAutoIds: [],
     lastAiApproval: null,
+    telegramConfig: createEmptyTelegramConfig(),
+    telegramMessages: [],
     firebaseUid: opts?.verifiedFirebaseUid || bundle.ownerId || null,
     firebaseEmail: opts?.verifiedEmail || bundle.email || null,
     createdAt: bundle.createdAt || new Date().toISOString(),
@@ -1569,6 +1613,8 @@ export function createOrAuthorizeTestAccount(): StoredUser {
     processedHistoryIds: [],
     processedAutoIds: [],
     lastAiApproval: null,
+    telegramConfig: createEmptyTelegramConfig(),
+    telegramMessages: [],
     firebaseUid: null,
     firebaseEmail: null,
     lastAdminActionAt: nowIso,

@@ -22,10 +22,13 @@ import {
   OctagonAlert,
   Layers,
   Activity,
+  Radio,
+  ArrowRight,
 } from 'lucide-react';
 import type {
   AiTradeApproval,
   ConnectionSnapshot,
+  SignalSourceMode,
   StrategySettings,
   TimeframeIndicatorSnapshot,
   TradeLogEntry,
@@ -78,7 +81,12 @@ interface SessionBotViewProps {
   onBotControl?: (
     payload: BotControlPayload
   ) => Promise<{ ok: boolean; message?: string; error?: string }>;
-  onNavigateTab: (tab: 'bot' | 'trades' | 'settings' | 'connections' | 'gate') => void;
+  onSwitchSignalSource?: (
+    source: SignalSourceMode
+  ) => Promise<{ ok: boolean; error?: string }>;
+  onNavigateTab: (
+    tab: 'bot' | 'trades' | 'telegram' | 'settings' | 'connections' | 'gate'
+  ) => void;
 }
 
 export function SessionBotView({
@@ -94,6 +102,7 @@ export function SessionBotView({
   onToggleAutoTrade,
   onSyncBrokerBalance,
   onBotControl,
+  onSwitchSignalSource,
   onNavigateTab,
 }: SessionBotViewProps) {
   const [autoToggleBusy, setAutoToggleBusy] = useState(false);
@@ -102,6 +111,7 @@ export function SessionBotView({
   const [syncBalanceBusy, setSyncBalanceBusy] = useState(false);
   const [tradeActionBusy, setTradeActionBusy] = useState(false);
   const [controlBusy, setControlBusy] = useState(false);
+  const [sourceBusy, setSourceBusy] = useState(false);
   const [confirmCloseAll, setConfirmCloseAll] = useState(false);
   const [candleTableTf, setCandleTableTf] = useState<'M5' | 'M15'>('M5');
   const [tradeActionNotice, setTradeActionNotice] = useState<{
@@ -215,6 +225,40 @@ export function SessionBotView({
   const checkGoldReason = isWeekend
     ? 'Weekend market closed — EMA STOCHASTIC PRO trades Monday to Friday only.'
     : activeSignal.reason;
+
+  const tgState = bot.telegram;
+  const activeSignalSource: SignalSourceMode = tgState?.signalSource ?? 'BOTH';
+  const tgStatusLabel =
+    tgState?.status === 'LISTENING'
+      ? 'Listening'
+      : tgState?.status === 'CONNECTED'
+        ? 'Connected'
+        : 'Disconnected';
+
+  const triggerSwitchSignalSource = async (nextSource: SignalSourceMode) => {
+    if (!onSwitchSignalSource || sourceBusy) return;
+    setSourceBusy(true);
+    setTradeActionNotice(null);
+    try {
+      const res = await onSwitchSignalSource(nextSource);
+      if (!res.ok) {
+        setTradeActionNotice({
+          ok: false,
+          text: res.error || 'Failed to switch signal source.',
+        });
+      } else {
+        const label =
+          nextSource === 'TELEGRAM'
+            ? 'Telegram Signals Only (Built-in EMA auto-entries paused)'
+            : nextSource === 'STRATEGY'
+              ? 'Built-in EMA Strategy Only'
+              : 'Both Built-in EMA Strategy + Telegram Signals';
+        setTradeActionNotice({ ok: true, text: `Signal source switched to ${label}.` });
+      }
+    } finally {
+      setSourceBusy(false);
+    }
+  };
 
   const triggerBotControl = async (payload: BotControlPayload) => {
     if (!onBotControl || controlBusy) return;
@@ -681,6 +725,74 @@ export function SessionBotView({
             )}
           </div>
         </div>
+
+        {/* Signal Source Switcher: Built-in Strategy vs Telegram Channel Signals */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2.5 border-t border-white/8 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-medium text-slate-400 whitespace-nowrap">
+              Signal Source:
+            </span>
+            <div className="inline-flex flex-wrap items-center gap-1">
+              {(
+                [
+                  { id: 'STRATEGY', label: 'Built-in EMA' },
+                  { id: 'TELEGRAM', label: 'Telegram Only' },
+                  { id: 'BOTH', label: 'Both' },
+                ] as Array<{ id: SignalSourceMode; label: string }>
+              ).map((opt) => {
+                const active = activeSignalSource === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    disabled={!onSwitchSignalSource || sourceBusy}
+                    onClick={() => void triggerSwitchSignalSource(opt.id)}
+                    className={`px-2.5 py-1 rounded border text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors disabled:opacity-50 ${
+                      active
+                        ? 'border-[#D4A853] bg-[#D4A853]/20 text-[#E5B85C]'
+                        : 'border-white/12 bg-[#0B0F17] text-slate-400 hover:text-slate-100'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="text-[11px] font-mono text-slate-400">
+              Telegram: {tgStatusLabel}
+              {tgState?.resolvedChannelTitle ? ` · ${tgState.resolvedChannelTitle}` : ''}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => onNavigateTab('telegram')}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded border border-sky-500/40 bg-sky-500/12 text-sky-200 text-[11px] font-semibold hover:bg-sky-500/20 whitespace-nowrap shrink-0 transition-colors"
+          >
+            <Radio className="w-3.5 h-3.5" />
+            <span>
+              {tgState?.status === 'LISTENING'
+                ? 'Telegram Signals (Live)'
+                : 'Switch / Setup Telegram'}
+            </span>
+            <ArrowRight className="w-3 h-3" />
+          </button>
+        </div>
+
+        {activeSignalSource === 'TELEGRAM' && tgState?.status !== 'LISTENING' && (
+          <div className="pt-2 border-t border-white/8 flex flex-wrap items-center justify-between gap-2 text-[11px] text-amber-200">
+            <span>
+              Telegram Only is active, so built-in EMA auto-entries are paused. Connect and start listening on your Telegram channel to receive live trades.
+            </span>
+            <button
+              type="button"
+              onClick={() => onNavigateTab('telegram')}
+              className="underline font-semibold text-[#E5B85C] hover:text-white whitespace-nowrap shrink-0"
+            >
+              Open Telegram Setup
+            </button>
+          </div>
+        )}
       </section>
 
       {feedPausedReconnecting && !isWeekend ? (

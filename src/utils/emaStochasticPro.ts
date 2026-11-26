@@ -86,6 +86,8 @@ export const DEFAULT_EMA_PRO_CONFIG: EmaStochasticProConfig = {
   tradingMode: 'SIGNALS_ONLY',
   tradingRunState: 'RUNNING',
   settingsVersion: 1,
+  telegramNotifyExecutions: true,
+  telegramNotifyTpSl: true,
 };
 
 export function mergeEmaProConfig(
@@ -147,6 +149,14 @@ export function mergeEmaProConfig(
     tradingMode: partial?.tradingMode ?? DEFAULT_EMA_PRO_CONFIG.tradingMode,
     tradingRunState: partial?.tradingRunState ?? DEFAULT_EMA_PRO_CONFIG.tradingRunState,
     settingsVersion: Math.max(1, finiteNum(partial?.settingsVersion, DEFAULT_EMA_PRO_CONFIG.settingsVersion)),
+    telegramNotifyExecutions:
+      partial?.telegramNotifyExecutions !== undefined
+        ? Boolean(partial.telegramNotifyExecutions)
+        : DEFAULT_EMA_PRO_CONFIG.telegramNotifyExecutions,
+    telegramNotifyTpSl:
+      partial?.telegramNotifyTpSl !== undefined
+        ? Boolean(partial.telegramNotifyTpSl)
+        : DEFAULT_EMA_PRO_CONFIG.telegramNotifyTpSl,
   };
 }
 

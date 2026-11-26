@@ -17,6 +17,14 @@ import type {
   TradingSessionTag,
 } from '../types/connectivity';
 import { getEffectiveSideEntryPrice, roundToDigits } from '../utils/dynamicSpread';
+import { inferSymbolDigits } from '../utils/telegramSignalParser';
+
+function formatRowPrice(val: number, symbol: string | null | undefined, goldDigits: number): string {
+  const sym = (symbol || 'XAUUSD').toUpperCase();
+  const isGold = sym.includes('XAU') || sym.includes('GOLD');
+  const digits = isGold ? goldDigits : inferSymbolDigits(sym);
+  return isGold ? `$${val.toFixed(digits)}` : val.toFixed(digits);
+}
 
 interface TradeLogViewProps {
   snapshot: ConnectionSnapshot;
@@ -636,7 +644,8 @@ export function TradeLogView({
                         </span>
                       </td>
                       <td className="py-3 pr-3 font-sans text-slate-200 whitespace-nowrap">
-                        {formatSessionLabel(tr.session)}
+                        <div>{formatSessionLabel(tr.session)}</div>
+                        <div className="text-[10px] font-mono text-slate-400">{tr.symbol || 'XAUUSD'}</div>
                       </td>
                       <td className="py-3 pr-3">
                         <span
@@ -653,25 +662,25 @@ export function TradeLogView({
                         {isNum(tr.lots) ? tr.lots.toFixed(2) : '—'}
                       </td>
                       <td className="py-3 pr-3 text-slate-100">
-                        {isNum(tr.entry) ? `$${tr.entry.toFixed(priceDigits)}` : '—'}
+                        {isNum(tr.entry) ? formatRowPrice(tr.entry, tr.symbol, priceDigits) : '—'}
                       </td>
                       <td className="py-3 pr-3 text-red-300 whitespace-nowrap">
-                        {isNum(tr.stop) ? `$${tr.stop.toFixed(priceDigits)}` : '—'}
+                        {isNum(tr.stop) ? formatRowPrice(tr.stop, tr.symbol, priceDigits) : '—'}
                         {tr.tp2Hit ? ' (TP2 Lock)' : tr.tp1Hit ? ' (TP1 Lock)' : tr.breakevenMoved ? ' (BE)' : ''}
                       </td>
                       <td className="py-3 pr-3 text-sky-300 whitespace-nowrap">
-                        {isNum(tr.tp1) ? `$${tr.tp1.toFixed(priceDigits)}` : '—'}
+                        {isNum(tr.tp1) ? formatRowPrice(tr.tp1, tr.symbol, priceDigits) : '—'}
                         {tr.tp1Hit ? ' ✓' : ''}
                       </td>
                       <td className="py-3 pr-3 text-emerald-300 whitespace-nowrap">
-                        {isNum(tr.tp2) ? `$${tr.tp2.toFixed(priceDigits)}` : '—'}
+                        {isNum(tr.tp2) ? formatRowPrice(tr.tp2, tr.symbol, priceDigits) : '—'}
                         {tr.tp2Hit ? ' ✓' : ''}
                       </td>
                       <td className="py-3 pr-3 text-violet-300 whitespace-nowrap">
                         {isNum(tr.tp3)
-                          ? `$${tr.tp3.toFixed(priceDigits)}`
+                          ? formatRowPrice(tr.tp3, tr.symbol, priceDigits)
                           : isNum(tr.target)
-                            ? `$${tr.target.toFixed(priceDigits)}`
+                            ? formatRowPrice(tr.target, tr.symbol, priceDigits)
                             : '—'}
                       </td>
                       <td className="py-3 pr-3 whitespace-nowrap">
@@ -828,28 +837,33 @@ export function TradeLogView({
                         </div>
                       </td>
                       <td className="py-2.5 pr-3">
-                        <span
-                          className={`px-1.5 py-0.5 rounded border text-[11px] font-semibold ${
-                            sig.action === 'BUY'
-                              ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
-                              : sig.action === 'SELL'
-                                ? 'border-red-500/30 bg-red-500/10 text-red-300'
-                                : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
-                          }`}
-                        >
-                          {sig.action}
-                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <span
+                            className={`px-1.5 py-0.5 rounded border text-[11px] font-semibold ${
+                              sig.action === 'BUY'
+                                ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+                                : sig.action === 'SELL'
+                                  ? 'border-red-500/30 bg-red-500/10 text-red-300'
+                                  : 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+                            }`}
+                          >
+                            {sig.action}
+                          </span>
+                          {sig.symbol && (
+                            <span className="text-[10px] text-slate-400">{sig.symbol}</span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-2.5 pr-3 text-slate-100">
-                        {isNum(sig.price) ? `$${sig.price.toFixed(priceDigits)}` : '—'}
+                        {isNum(sig.price) ? formatRowPrice(sig.price, sig.symbol, priceDigits) : '—'}
                       </td>
                       <td className="py-2.5 pr-3 text-red-300">
-                        {isNum(sig.stop) ? `$${sig.stop.toFixed(priceDigits)}` : '—'}
+                        {isNum(sig.stop) ? formatRowPrice(sig.stop, sig.symbol, priceDigits) : '—'}
                       </td>
                       <td className="py-2.5 pr-3 text-emerald-300 whitespace-nowrap">
-                        {isNum(sig.tp1) ? `$${sig.tp1.toFixed(priceDigits)}` : '—'} /{' '}
-                        {isNum(sig.tp2) ? `$${sig.tp2.toFixed(priceDigits)}` : '—'} /{' '}
-                        {isNum(sig.tp3) ? `$${sig.tp3.toFixed(priceDigits)}` : '—'}
+                        {isNum(sig.tp1) ? formatRowPrice(sig.tp1, sig.symbol, priceDigits) : '—'} /{' '}
+                        {isNum(sig.tp2) ? formatRowPrice(sig.tp2, sig.symbol, priceDigits) : '—'} /{' '}
+                        {isNum(sig.tp3) ? formatRowPrice(sig.tp3, sig.symbol, priceDigits) : '—'}
                       </td>
                       <td className="py-2.5 pr-3 font-sans text-[11px] text-slate-300 max-w-[180px] truncate" title={`${sig.emaAlignment || ''} | ${sig.stochReading || ''}`}>
                         {sig.emaAlignment || sig.setupStatus || 'EMA PRO'}
@@ -919,11 +933,12 @@ export function TradeLogView({
                         <span className={ord.side === 'BUY' ? 'text-emerald-300' : 'text-red-300'}>
                           {ord.side}
                         </span>{' '}
+                        <span className="text-slate-300">{ord.symbol}</span>{' '}
                         {isNum(ord.lots) ? ord.lots.toFixed(2) : '—'}
                       </td>
                       <td className="py-2.5 pr-3 text-slate-200">
-                        {isNum(ord.requestedEntry) ? `$${ord.requestedEntry.toFixed(priceDigits)}` : '—'} →{' '}
-                        {isNum(ord.actualFillPrice) ? `$${ord.actualFillPrice.toFixed(priceDigits)}` : '—'}
+                        {isNum(ord.requestedEntry) ? formatRowPrice(ord.requestedEntry, ord.symbol, priceDigits) : '—'} →{' '}
+                        {isNum(ord.actualFillPrice) ? formatRowPrice(ord.actualFillPrice, ord.symbol, priceDigits) : '—'}
                       </td>
                       <td className="py-2.5 pr-3">
                         <span

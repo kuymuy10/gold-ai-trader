@@ -15,20 +15,23 @@
   - Supports **Demo** simulation and **Live** account execution via each trader's verified `Broker Bridge Webhook URL` with idempotent order tracking (`FILLED`, `DEMO_SIMULATED`, `EXECUTION_UNAVAILABLE`).
 - **Independent Gemini AI Trade Approver**
   - Evaluates 14 technical, spread, volatility, news, and account-risk criteria before execution while strictly honoring hard risk and quote-freshness safeguards.
+- **Telegram User API Signal Listener**
+  - Connects via your personal Telegram User API (MTProto user session, not a Bot) so it can read live messages from any joined signal channel even if you do not own it.
+  - Parses `Pair`, `Direction (BUY/SELL)`, `Entry`, `SL`, `TP1`, `TP2`, and `TP3`, ignores normal chat/recap messages, and routes valid signals to the Auto-Trading module.
 
 ## Project Structure
 
 ```text
 .
 ├── server.ts                  # Express + Vite/static production server listening on process.env.PORT
-├── server/                    # TickerAll execution adapter, Gemini approver, history fetcher, store & auth
+├── server/                    # TickerAll execution adapter, Telegram MTProto listener, Gemini approver, store & auth
 ├── src/
 │   ├── App.tsx                # Main React workspace & Firebase cloud backup sync
-│   ├── components/            # Dashboard, Strategy Settings, Broker Connection, Execution Gate, Admin UI
+│   ├── components/            # Dashboard, Telegram Signals, Strategy Settings, Broker Connection, Execution Gate, Admin UI
 │   ├── lib/                   # Firebase client & Firestore synchronization helpers
 │   ├── types/                 # Shared TypeScript interfaces
-│   └── utils/                 # EMA Stochastic Pro, Dynamic Spread, and risk-sizing engines
-├── tests/                     # Automated strategy, spread, multi-broker, and execution unit tests
+│   └── utils/                 # EMA Stochastic Pro, Dynamic Spread, Telegram parser, and risk-sizing engines
+├── tests/                     # Automated strategy, spread, Telegram parser, multi-broker, and execution unit tests
 ├── index.html                 # Vite entry HTML
 ├── package.json               # Dependencies and build/start scripts
 ├── .env.example               # Environment variable template (no real secrets)
@@ -44,15 +47,20 @@ Copy `.env.example` to `.env` and fill in your own secrets (never commit `.env`)
 cp .env.example .env
 ```
 
-Available environment variables:
+Available environment variables (for local `.env` or **Railway** Variables):
 
-- `PORT` — HTTP port the server binds to (defaults to `3000`).
+- `PORT` — HTTP port the server binds to (defaults to `3000`; Railway injects this automatically).
 - `GEMINI_API_KEY` — Server-side Google Gemini API key for the AI Trade Approver.
-- `APP_URL` — Public base URL where the app is hosted.
+- `APP_URL` — Public base URL where the app is hosted (e.g., your Railway domain).
 - `TICKERALL_BASE_URL` — Base URL for the TickerAll MT5 market data API.
 - `TICKERALL_API_KEY` — Fallback server-side TickerAll API key (can also be configured in `/admin`).
 - `ADMIN_PASSWORD` — Admin PIN/password for `/admin`.
-- `KEY_ENCRYPTION_SECRET` — 32-byte secret for encrypting stored broker keys at rest.
+- `KEY_ENCRYPTION_SECRET` — 32-byte secret for encrypting stored broker and Telegram keys at rest.
+- `TELEGRAM_API_ID` — Telegram User API numeric ID from `my.telegram.org`.
+- `TELEGRAM_API_HASH` — Telegram User API hash from `my.telegram.org`.
+- `TELEGRAM_PHONE_NUMBER` — Telegram account phone number with country code (e.g., `+260...`).
+- `TELEGRAM_CHANNEL` — Signal channel link, `@username`, or `-100...` channel ID you have joined.
+- `TELEGRAM_SESSION_STRING` — Optional saved MTProto session string for headless auto-reconnect across Railway restarts.
 
 ## Running Locally & in Production
 

@@ -63,11 +63,42 @@ export function BrokerConnectionView({
   );
   const [saving, setSaving] = useState(false);
   const [syncingBalance, setSyncingBalance] = useState(false);
+  const [formDirty, setFormDirty] = useState(false);
   const [notice, setNotice] = useState<{ text: string; isError?: boolean } | null>(null);
 
   useEffect(() => {
     setBalance(user.balance.toFixed(2));
   }, [user.balance]);
+
+  useEffect(() => {
+    setFormDirty(false);
+  }, [user.id]);
+
+  useEffect(() => {
+    if (formDirty) return;
+    const nextPreset = resolveBrokerPreset(
+      user.brokerName,
+      user.brokerSetup?.selectedBrokerPreset
+    );
+    setBrokerPreset(nextPreset);
+    setCustomBrokerName(nextPreset === 'Other' ? user.brokerName : '');
+    setBrokerServer(user.brokerServer);
+    setMt5Login(user.mt5Login);
+    setAccountType(user.accountType);
+    setBrokerBridgeUrl(user.brokerBridgeUrl);
+    if (user.brokerSetup) {
+      setBrokerSetup(user.brokerSetup);
+    }
+  }, [
+    formDirty,
+    user.id,
+    user.brokerName,
+    user.brokerServer,
+    user.mt5Login,
+    user.accountType,
+    user.brokerBridgeUrl,
+    user.brokerSetup,
+  ]);
 
   const feedInfo = snapshot.bot?.feedInfo;
   const autoLot = snapshot.bot?.autoLotInfo;
@@ -127,6 +158,7 @@ export function BrokerConnectionView({
         snapshot?: ConnectionSnapshot;
       };
       if (res.ok && json.ok && json.user && json.snapshot) {
+        setFormDirty(false);
         setBrokerApiKey('');
         if (json.user.brokerSetupWrongAccount) {
           setNotice({
@@ -180,6 +212,7 @@ export function BrokerConnectionView({
         snapshot?: ConnectionSnapshot;
       };
       if (res.ok && json.ok && json.user && json.snapshot) {
+        setFormDirty(false);
         setNotice({ text: 'Broker disconnected. Auto Trade has been locked OFF.' });
         onUserUpdated(json.user, json.snapshot);
       } else {
@@ -362,6 +395,7 @@ export function BrokerConnectionView({
               value={brokerPreset}
               onChange={(e) => {
                 const val = e.target.value as BrokerPreset;
+                setFormDirty(true);
                 setBrokerPreset(val);
                 setBrokerSetup((prev) => ({
                   ...prev,
@@ -387,7 +421,10 @@ export function BrokerConnectionView({
                 required
                 placeholder="e.g. HFM, IC Markets, Deriv, FBS"
                 value={customBrokerName}
-                onChange={(e) => setCustomBrokerName(e.target.value)}
+                onChange={(e) => {
+                  setFormDirty(true);
+                  setCustomBrokerName(e.target.value);
+                }}
                 className="mt-1 w-full px-3 py-2 rounded bg-[#0B0F17] border border-white/12 text-slate-100"
               />
             </label>
@@ -406,7 +443,10 @@ export function BrokerConnectionView({
                       : 'Your MT5 Server Name'
               }
               value={brokerServer}
-              onChange={(e) => setBrokerServer(e.target.value)}
+              onChange={(e) => {
+                setFormDirty(true);
+                setBrokerServer(e.target.value);
+              }}
               className="mt-1 w-full px-3 py-2 rounded bg-[#0B0F17] border border-white/12 text-slate-100 font-mono"
             />
           </label>
@@ -416,7 +456,10 @@ export function BrokerConnectionView({
               type="text"
               required
               value={mt5Login}
-              onChange={(e) => setMt5Login(e.target.value)}
+              onChange={(e) => {
+                setFormDirty(true);
+                setMt5Login(e.target.value);
+              }}
               className="mt-1 w-full px-3 py-2 rounded bg-[#0B0F17] border border-white/12 text-slate-100 font-mono"
             />
           </label>
@@ -424,7 +467,10 @@ export function BrokerConnectionView({
             <span className="text-slate-400">Account Environment</span>
             <select
               value={accountType}
-              onChange={(e) => setAccountType(e.target.value as 'Demo' | 'Live')}
+              onChange={(e) => {
+                setFormDirty(true);
+                setAccountType(e.target.value as 'Demo' | 'Live');
+              }}
               className="mt-1 w-full px-3 py-2 rounded bg-[#0B0F17] border border-white/12 text-slate-100"
             >
               <option value="Demo">Demo</option>
@@ -464,7 +510,10 @@ export function BrokerConnectionView({
               type="url"
               placeholder="https://your-mt5-bridge.example.com/orders"
               value={brokerBridgeUrl}
-              onChange={(e) => setBrokerBridgeUrl(e.target.value)}
+              onChange={(e) => {
+                setFormDirty(true);
+                setBrokerBridgeUrl(e.target.value);
+              }}
               className="mt-1 w-full px-3 py-2 rounded bg-[#0B0F17] border border-white/12 text-slate-100 font-mono"
             />
           </label>
@@ -473,7 +522,10 @@ export function BrokerConnectionView({
         {/* Broker Account Setup Check */}
         <BrokerAccountSetupChecklist
           setup={brokerSetup}
-          onChange={setBrokerSetup}
+          onChange={(next) => {
+            setFormDirty(true);
+            setBrokerSetup(next);
+          }}
         />
 
         <div className="flex flex-wrap items-center justify-end gap-3 pt-3 border-t border-white/8">

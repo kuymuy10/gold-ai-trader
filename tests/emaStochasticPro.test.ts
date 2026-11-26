@@ -18,6 +18,7 @@ import {
   calculateTieredAutoLot,
   determineSessionPhase,
   getLusakaClock,
+  isThreeTargetStopHit,
 } from '../src/utils/strategyEngine.ts';
 import {
   computeSpreadMetrics,
@@ -1652,6 +1653,105 @@ async function main() {
     assert.equal(centUsdSizing.valid, true);
     assert.equal(uscSizing.lots, 0.12);
     assert.equal(centUsdSizing.lots, 0.12);
+  });
+
+  await runTest('Telegram push notification toggles default and preserve overrides', async () => {
+    assert.equal(DEFAULT_EMA_PRO_CONFIG.telegramNotifyExecutions, true);
+    assert.equal(DEFAULT_EMA_PRO_CONFIG.telegramNotifyTpSl, true);
+
+    const defaulted = mergeEmaProConfig({});
+    assert.equal(defaulted.telegramNotifyExecutions, true);
+    assert.equal(defaulted.telegramNotifyTpSl, true);
+
+    const execOffOnly = mergeEmaProConfig({ telegramNotifyExecutions: false });
+    assert.equal(execOffOnly.telegramNotifyExecutions, false);
+    assert.equal(execOffOnly.telegramNotifyTpSl, true);
+
+    const tpSlOffOnly = mergeEmaProConfig({ telegramNotifyTpSl: false });
+    assert.equal(tpSlOffOnly.telegramNotifyExecutions, true);
+    assert.equal(tpSlOffOnly.telegramNotifyTpSl, false);
+
+    const bothOff = mergeEmaProConfig({
+      telegramNotifyExecutions: false,
+      telegramNotifyTpSl: false,
+    });
+    assert.equal(bothOff.telegramNotifyExecutions, false);
+    assert.equal(bothOff.telegramNotifyTpSl, false);
+  });
+
+  await runTest('3-target trailing stop does not stop out on flat TP1/TP2 price ticks', async () => {
+    // Initial SL hit before TP1
+    assert.equal(
+      isThreeTargetStopHit({
+        side: 'BUY',
+        price: 2640.0,
+        stop: 2640.0,
+        tp1: 2660.0,
+        tp2: 2670.0,
+        tp1Hit: false,
+        tp2Hit: false,
+        pointSize: 0.01,
+      }),
+      true
+    );
+
+    // After TP1 hit and SL trailed to TP1, staying flat at TP1 must NOT immediately stop out runner
+    assert.equal(
+      isThreeTargetStopHit({
+        side: 'BUY',
+        price: 2660.0,
+        stop: 2660.0,
+        tp1: 2660.0,
+        tp2: 2670.0,
+        tp1Hit: true,
+        tp2Hit: false,
+        pointSize: 0.01,
+      }),
+      false
+    );
+
+    // Pullback strictly below trailed TP1 locks trailing profit
+    assert.equal(
+      isThreeTargetStopHit({
+        side: 'BUY',
+        price: 2659.98,
+        stop: 2660.0,
+        tp1: 2660.0,
+        tp2: 2670.0,
+        tp1Hit: true,
+        tp2Hit: false,
+        pointSize: 0.01,
+      }),
+      true
+    );
+
+    // SELL: After TP2 hit and SL trailed to TP2, staying flat at TP2 must NOT stop out, while bounce above TP2 does
+    assert.equal(
+      isThreeTargetStopHit({
+        side: 'SELL',
+        price: 2630.0,
+        stop: 2630.0,
+        tp1: 2640.0,
+        tp2: 2630.0,
+        tp1Hit: true,
+        tp2Hit: true,
+        pointSize: 0.01,
+      }),
+      false
+    );
+    assert.equal(
+      isThreeTargetStopHit({
+        side: 'SELL',
+        price: 2630.02,
+        stop: 2630.0,
+        tp1: 2640.0,
+        tp2: 2630.0,
+        tp1Hit: true,
+        tp2Hit: true,
+        pointSize: 0.01,
+      }),
+      true
+    );
   });
 
   console.log(`\nALL ${passed} EMA STOCHASTIC PRO TEST SUITES PASSED.`);

@@ -410,6 +410,8 @@ export interface EmaStochasticProConfig {
   tradingMode: TradingMode;
   tradingRunState: TradingRunState;
   settingsVersion: number;
+  telegramNotifyExecutions: boolean; // Push Telegram alert when trades execute
+  telegramNotifyTpSl: boolean; // Push Telegram alert when TP1/TP2/TP3/SL/BE hits
 }
 
 export interface StrategySettings {
@@ -907,6 +909,69 @@ export interface ProxyFeedStatusInfo {
   message: string;
 }
 
+export type TelegramConnectionStatus =
+  | 'DISCONNECTED'
+  | 'CONNECTING'
+  | 'AWAITING_CODE'
+  | 'AWAITING_2FA'
+  | 'CONNECTED'
+  | 'LISTENING';
+
+export interface ParsedTelegramSignal {
+  isSignal: boolean;
+  pair: string | null;
+  direction: 'BUY' | 'SELL' | null;
+  entry: number | null;
+  entryIsMarket?: boolean;
+  sl: number | null;
+  tp1: number | null;
+  tp2: number | null;
+  tp3: number | null;
+  reason?: string;
+  executionStatus?:
+    | 'NOT_SIGNAL'
+    | 'IGNORED_SETTING'
+    | 'QUEUED'
+    | 'EXECUTED'
+    | 'BLOCKED'
+    | 'DUPLICATE';
+  executionNote?: string | null;
+  tradeId?: string | null;
+  orderId?: string | null;
+}
+
+export interface TelegramChannelMessage {
+  id: string;
+  telegramMessageId: number;
+  channelId: string;
+  channelTitle: string;
+  text: string;
+  receivedAt: string;
+  lusakaTime: string;
+  parsed: ParsedTelegramSignal;
+}
+
+export type SignalSourceMode = 'STRATEGY' | 'TELEGRAM' | 'BOTH';
+
+export interface TelegramListenerPublicState {
+  apiId: string;
+  hasApiHash: boolean;
+  apiHashLast4: string;
+  phoneNumber: string;
+  channelTarget: string;
+  resolvedChannelTitle: string | null;
+  resolvedChannelId: string | null;
+  status: TelegramConnectionStatus;
+  hasSession: boolean;
+  isCodeViaApp?: boolean;
+  autoExecuteSignals: boolean;
+  signalSource?: SignalSourceMode;
+  lastError: string | null;
+  lastMessageAt: string | null;
+  envFallbackConfigured: boolean;
+  messages: TelegramChannelMessage[];
+}
+
 export interface BotStateSnapshot {
   strategyModule: StrategyModuleId;
   lusakaDate: string;
@@ -970,6 +1035,7 @@ export interface BotStateSnapshot {
   feedInfo?: ProxyFeedStatusInfo;
   lastAiApproval?: AiTradeApproval | null;
   pendingAiApproval?: boolean;
+  telegram?: TelegramListenerPublicState;
 }
 
 export type SubscriptionPlan = 'weekly' | 'monthly' | 'quarterly';

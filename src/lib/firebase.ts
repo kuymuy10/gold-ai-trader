@@ -246,6 +246,8 @@ function sanitizeEmaProConfig(ema?: Partial<EmaStochasticProConfig>): EmaStochas
     tradingMode,
     tradingRunState,
     settingsVersion: finiteNum(ema?.settingsVersion, 1, 0),
+    telegramNotifyExecutions: ema?.telegramNotifyExecutions !== false,
+    telegramNotifyTpSl: ema?.telegramNotifyTpSl !== false,
   };
 }
 

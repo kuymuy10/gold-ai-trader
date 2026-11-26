@@ -14,6 +14,7 @@ import {
   determineSessionPhase,
   evaluateUsdNewsClearance,
   getLusakaClock,
+  isThreeTargetStopHit,
   parseHHMMToMinutes,
   round2,
 } from './src/utils/strategyEngine.ts';
@@ -99,6 +100,21 @@ import {
 } from './server/firebaseTokenVerifier.ts';
 import { reviewTradeWithGeminiApprover } from './server/geminiApprover.ts';
 import { isSafeExternalUrl } from './server/urlSafety.ts';
+import {
+  connectTelegramUser,
+  disconnectTelegramUser,
+  ensureUserTelegramConfig,
+  getTelegramPublicState,
+  registerTelegramHooks,
+  resumeTelegramListenersOnBoot,
+  saveTelegramConfigForUser,
+  sendTelegramPushMessage,
+  shutdownAllTelegramClients,
+  startListeningTelegramUser,
+  stopListeningTelegramUser,
+  verifyTelegramUserCode,
+} from './server/telegramListener.ts';
+import { inferSymbolDigits } from './src/utils/telegramSignalParser.ts';
 import type {
   AdminDashboardData,
   AdminSpreadPolicy,
@@ -110,15 +126,20 @@ import type {
   MasterConfigSyncBundle,
   MoMoConfig,
   NormalizedTick,
+  ParsedTelegramSignal,
   PlanPricing,
   RiskEventRecord,
   SessionPhase,
   SignalHistoryEntry,
+  SignalSourceMode,
   SpreadSampleRecord,
   StrategySettings,
   SubscriptionPlan,
   SymbolSpecification,
+  TelegramChannelMessage,
   TradeLogEntry,
+  TradeOrderRecord,
+  TradeSignal,
   TradingSessionTag,
   UsdNewsEvent,
   UserSyncBundle,
@@ -1025,6 +1046,7 @@ function getUserBotSnapshot(user: StoredUser, nowMs = Date.now()): BotStateSnaps
     },
     lastAiApproval: user.lastAiApproval ?? null,
     pendingAiApproval: pendingAiUserIds.has(user.id),
+    telegram: getTelegramPublicState(user),
   };
 }
 
@@ -1220,6 +1242,11 @@ function applyLiveBrokerBalanceUpdate(
   return changed;
 }
 
+function isGoldSymbol(symbol: string | null | undefined): boolean {
+  const upper = (symbol || 'XAUUSD').toUpperCase();
+  return upper.includes('XAU') || upper.includes('GOLD');
+}
+
 function recomputeUserFloatingEquity(
   user: StoredUser,
   priceOrQuote: number | { bid?: number | null; ask?: number | null; last: number | null } | null,
@@ -1234,8 +1261,11 @@ function recomputeUserFloatingEquity(
     return false;
   }
 
-  const openTrades = user.tradeLog.filter((t) => t.status === 'OPEN');
+  const openTrades = user.tradeLog.filter((t) => t.status === 'OPEN' && isGoldSymbol(t.symbol));
   if (openTrades.length === 0) {
+    if (user.tradeLog.some((t) => t.status === 'OPEN')) {
+      return false;
+    }
     const bal = round2(user.balance);
     if (Math.abs(user.equity - bal) >= 0.01) {
       user.equity = bal;
@@ -1282,6 +1312,66 @@ function recomputeUserFloatingEquity(
   return false;
 }
 
+function notifyTelegramTradeExecution(
+  user: StoredUser,
+  trade: TradeLogEntry,
+  sourceLabel: string
+): void {
+  const cfg = mergeEmaProConfig(user.settings.emaPro);
+  if (!cfg.telegramNotifyExecutions) return;
+  const digits = isGoldSymbol(trade.symbol) ? 2 : inferSymbolDigits(trade.symbol);
+  const tpParts = [
+    typeof trade.tp1 === 'number' ? `TP1 ${trade.tp1.toFixed(digits)}` : null,
+    typeof trade.tp2 === 'number' ? `TP2 ${trade.tp2.toFixed(digits)}` : null,
+    typeof trade.tp3 === 'number' ? `TP3 ${trade.tp3.toFixed(digits)}` : null,
+  ].filter(Boolean);
+  const targetsLine =
+    tpParts.length > 0 ? tpParts.join(' | ') : `TP ${trade.target.toFixed(digits)}`;
+  const lines = [
+    `GOLD AI TRADER — TRADE EXECUTED`,
+    `${trade.symbol} ${trade.side} · ${trade.lots.toFixed(2)} lots`,
+    `Entry: ${trade.entry.toFixed(digits)} | SL: ${trade.stop.toFixed(digits)}`,
+    `Targets: ${targetsLine}`,
+    `Source: ${sourceLabel} | ${user.brokerName} (${user.accountType})`,
+    `Time: ${trade.timeLusaka} CAT`,
+  ];
+  void sendTelegramPushMessage(user, lines.join('\n')).catch((err) => {
+    console.error('[Telegram exec push notify error]', err);
+  });
+}
+
+function notifyTelegramTpSlEvent(
+  user: StoredUser,
+  params: {
+    eventLabel: string;
+    trade: TradeLogEntry;
+    price: number;
+    digits: number;
+    realizedPnl: number | null;
+    note?: string;
+    balanceAfter?: number;
+  }
+): void {
+  const cfg = mergeEmaProConfig(user.settings.emaPro);
+  if (!cfg.telegramNotifyTpSl) return;
+  const { eventLabel, trade, price, digits, realizedPnl, note, balanceAfter } = params;
+  const pnlStr =
+    realizedPnl !== null && Number.isFinite(realizedPnl)
+      ? `${realizedPnl >= 0 ? '+' : '-'}$${Math.abs(realizedPnl).toFixed(2)}`
+      : 'N/A';
+  const lines = [
+    `GOLD AI TRADER — ${eventLabel}`,
+    `${trade.symbol} ${trade.side} · ${trade.lots.toFixed(2)} lots`,
+    `Trigger Price: ${price.toFixed(digits)} (Entry ${trade.entry.toFixed(digits)})`,
+    `Realized P&L: ${pnlStr}`,
+    typeof balanceAfter === 'number' ? `Account Balance: $${balanceAfter.toFixed(2)}` : null,
+    note ? `Detail: ${note}` : null,
+  ].filter(Boolean);
+  void sendTelegramPushMessage(user, lines.join('\n')).catch((err) => {
+    console.error('[Telegram TP/SL push notify error]', err);
+  });
+}
+
 function resolveUserOpenTradesAtPrice(
   user: StoredUser,
   priceOrQuote: number | { bid?: number | null; ask?: number | null; last: number | null },
@@ -1301,7 +1391,7 @@ function resolveUserOpenTradesAtPrice(
 
   for (let i = 0; i < user.tradeLog.length; i += 1) {
     const t = user.tradeLog[i];
-    if (t.status !== 'OPEN') continue;
+    if (t.status !== 'OPEN' || !isGoldSymbol(t.symbol)) continue;
     // Side-specific exit/trigger price: BUY exits on Bid, SELL exits on Ask
     const price = getEffectiveSideClosingPrice(t.side, bid, ask, last, spec.digits) ?? last;
 
@@ -1320,7 +1410,16 @@ function resolveUserOpenTradesAtPrice(
       const tp3 = t.tp3 as number;
       const isBuy = t.side === 'BUY';
 
-      const slHit = isBuy ? price <= t.stop : price >= t.stop;
+      const slHit = isThreeTargetStopHit({
+        side: t.side,
+        price,
+        stop: t.stop,
+        tp1,
+        tp2,
+        tp1Hit: Boolean(t.tp1Hit),
+        tp2Hit: Boolean(t.tp2Hit),
+        pointSize: spec.pointSize,
+      });
       if (slHit) {
         const remFrac = t.tp2Hit ? 0.33 : t.tp1Hit ? (cfg.partialProfitEnabled ? 0.66 : 1.0) : 1.0;
         const diff = isBuy ? t.stop - t.entry : t.entry - t.stop;
@@ -1332,7 +1431,7 @@ function resolveUserOpenTradesAtPrice(
         user.equity = balanceAfter;
         user.lastBalanceSyncAt = nowIso;
         user.balanceSyncSource = 'TRADE_PNL';
-        user.tradeLog[i] = {
+        const updatedTrade: TradeLogEntry = {
           ...t,
           status: totalPnl >= 0 ? 'TP_HIT' : 'SL_HIT',
           closedAt: nowIso,
@@ -1341,6 +1440,16 @@ function resolveUserOpenTradesAtPrice(
           balanceAfter,
           notes: `${t.notes} · Stopped at $${t.stop.toFixed(spec.digits)} (${totalPnl >= 0 ? 'Trailing Profit Locked' : 'SL_HIT'})`,
         };
+        user.tradeLog[i] = updatedTrade;
+        notifyTelegramTpSlEvent(user, {
+          eventLabel: totalPnl >= 0 ? 'TRAILING STOP PROFIT LOCKED' : 'SL HIT',
+          trade: updatedTrade,
+          price: t.stop,
+          digits: spec.digits,
+          realizedPnl: totalPnl,
+          balanceAfter,
+          note: totalPnl >= 0 ? 'Trailing SL hit in profit' : 'Stop Loss triggered',
+        });
         changed = true;
         continue;
       }
@@ -1353,7 +1462,7 @@ function resolveUserOpenTradesAtPrice(
         user.equity = user.balance;
         user.lastBalanceSyncAt = nowIso;
         user.balanceSyncSource = 'TRADE_PNL';
-        user.tradeLog[i] = {
+        const updatedTrade: TradeLogEntry = {
           ...t,
           tp1Hit: true,
           tp1RealizedPnl: tp1Gain,
@@ -1361,6 +1470,16 @@ function resolveUserOpenTradesAtPrice(
           stop: nextStop,
           notes: `${t.notes} · TP1 hit @ $${tp1.toFixed(spec.digits)}, SL trailed to $${nextStop.toFixed(spec.digits)}`,
         };
+        user.tradeLog[i] = updatedTrade;
+        notifyTelegramTpSlEvent(user, {
+          eventLabel: 'TP1 HIT',
+          trade: updatedTrade,
+          price: tp1,
+          digits: spec.digits,
+          realizedPnl: tp1Gain,
+          balanceAfter: user.balance,
+          note: `SL trailed to $${nextStop.toFixed(spec.digits)}`,
+        });
         changed = true;
       }
 
@@ -1373,13 +1492,23 @@ function resolveUserOpenTradesAtPrice(
         user.equity = user.balance;
         user.lastBalanceSyncAt = nowIso;
         user.balanceSyncSource = 'TRADE_PNL';
-        user.tradeLog[i] = {
+        const updatedTrade: TradeLogEntry = {
           ...postTp1,
           tp2Hit: true,
           tp2RealizedPnl: tp2Gain,
           stop: nextStop,
           notes: `${postTp1.notes} · TP2 hit @ $${tp2.toFixed(spec.digits)}, SL trailed to $${nextStop.toFixed(spec.digits)}`,
         };
+        user.tradeLog[i] = updatedTrade;
+        notifyTelegramTpSlEvent(user, {
+          eventLabel: 'TP2 HIT',
+          trade: updatedTrade,
+          price: tp2,
+          digits: spec.digits,
+          realizedPnl: tp2Gain,
+          balanceAfter: user.balance,
+          note: `SL trailed to $${nextStop.toFixed(spec.digits)}`,
+        });
         changed = true;
       }
 
@@ -1393,7 +1522,7 @@ function resolveUserOpenTradesAtPrice(
         user.equity = balanceAfter;
         user.lastBalanceSyncAt = nowIso;
         user.balanceSyncSource = 'TRADE_PNL';
-        user.tradeLog[i] = {
+        const updatedTrade: TradeLogEntry = {
           ...postTp2,
           tp1Hit: true,
           tp2Hit: true,
@@ -1404,6 +1533,16 @@ function resolveUserOpenTradesAtPrice(
           balanceAfter,
           notes: `${postTp2.notes} · TP3 Target Hit @ $${tp3.toFixed(spec.digits)}`,
         };
+        user.tradeLog[i] = updatedTrade;
+        notifyTelegramTpSlEvent(user, {
+          eventLabel: 'TP3 TARGET HIT',
+          trade: updatedTrade,
+          price: tp3,
+          digits: spec.digits,
+          realizedPnl: totalPnl,
+          balanceAfter,
+          note: 'Final target closed',
+        });
         changed = true;
       }
       continue;
@@ -1429,7 +1568,7 @@ function resolveUserOpenTradesAtPrice(
           user.equity = balanceAfter;
           user.lastBalanceSyncAt = nowIso;
           user.balanceSyncSource = 'TRADE_PNL';
-          user.tradeLog[i] = {
+          const updatedTrade: TradeLogEntry = {
             ...t,
             status: 'SL_HIT',
             closedAt: nowIso,
@@ -1438,6 +1577,16 @@ function resolveUserOpenTradesAtPrice(
             balanceAfter,
             notes: `${t.notes} · Closed SL_HIT @ $${t.stop.toFixed(spec.digits)} (${nowIso.slice(11, 19)})`,
           };
+          user.tradeLog[i] = updatedTrade;
+          notifyTelegramTpSlEvent(user, {
+            eventLabel: 'SL HIT',
+            trade: updatedTrade,
+            price: t.stop,
+            digits: spec.digits,
+            realizedPnl: pnlDollars,
+            balanceAfter,
+            note: 'Stop Loss triggered',
+          });
           changed = true;
         } else if (tp1HitNow) {
           const tp2HitNow = t.side === 'BUY' ? price >= tp2 : price <= tp2;
@@ -1450,7 +1599,7 @@ function resolveUserOpenTradesAtPrice(
             user.equity = balanceAfter;
             user.lastBalanceSyncAt = nowIso;
             user.balanceSyncSource = 'TRADE_PNL';
-            user.tradeLog[i] = {
+            const updatedTrade: TradeLogEntry = {
               ...t,
               tp1Hit: true,
               tp1RealizedPnl: tp1Gain,
@@ -1463,13 +1612,23 @@ function resolveUserOpenTradesAtPrice(
               balanceAfter,
               notes: `${t.notes} · TP1 ($${tp1.toFixed(spec.digits)}) + TP2 ($${tp2.toFixed(spec.digits)}) hit (${nowIso.slice(11, 19)})`,
             };
+            user.tradeLog[i] = updatedTrade;
+            notifyTelegramTpSlEvent(user, {
+              eventLabel: 'TP1 + TP2 TARGET HIT',
+              trade: updatedTrade,
+              price: tp2,
+              digits: spec.digits,
+              realizedPnl: totalPnl,
+              balanceAfter,
+              note: 'Both targets filled',
+            });
           } else {
             const balanceAfterTp1 = Math.max(0, round2(user.balance + tp1Gain));
             user.balance = balanceAfterTp1;
             user.equity = balanceAfterTp1;
             user.lastBalanceSyncAt = nowIso;
             user.balanceSyncSource = 'TRADE_PNL';
-            user.tradeLog[i] = {
+            const updatedTrade: TradeLogEntry = {
               ...t,
               tp1Hit: true,
               tp1RealizedPnl: tp1Gain,
@@ -1477,6 +1636,16 @@ function resolveUserOpenTradesAtPrice(
               stop: roundToDigits(t.entry, spec.digits),
               notes: `${t.notes} · TP1 50% closed (+$${tp1Gain.toFixed(2)}) @ $${tp1.toFixed(spec.digits)}, SL moved to BE $${t.entry.toFixed(spec.digits)}`,
             };
+            user.tradeLog[i] = updatedTrade;
+            notifyTelegramTpSlEvent(user, {
+              eventLabel: 'TP1 HIT (50% PARTIAL)',
+              trade: updatedTrade,
+              price: tp1,
+              digits: spec.digits,
+              realizedPnl: tp1Gain,
+              balanceAfter: balanceAfterTp1,
+              note: `SL moved to Breakeven $${t.entry.toFixed(spec.digits)}`,
+            });
           }
           changed = true;
         }
@@ -1495,7 +1664,7 @@ function resolveUserOpenTradesAtPrice(
           user.equity = balanceAfter;
           user.lastBalanceSyncAt = nowIso;
           user.balanceSyncSource = 'TRADE_PNL';
-          user.tradeLog[i] = {
+          const updatedTrade: TradeLogEntry = {
             ...t,
             tp1RealizedPnl: tp1Recorded ? alreadyCreditedTp1 : tp1Gain,
             status: 'TP_HIT',
@@ -1505,6 +1674,16 @@ function resolveUserOpenTradesAtPrice(
             balanceAfter,
             notes: `${t.notes} · TP2 Runner hit @ $${tp2.toFixed(spec.digits)} (${nowIso.slice(11, 19)})`,
           };
+          user.tradeLog[i] = updatedTrade;
+          notifyTelegramTpSlEvent(user, {
+            eventLabel: 'TP2 RUNNER HIT',
+            trade: updatedTrade,
+            price: tp2,
+            digits: spec.digits,
+            realizedPnl: totalPnl,
+            balanceAfter,
+            note: 'Runner target closed',
+          });
           changed = true;
         } else if (beHit) {
           const totalPnl = tp1Recorded ? alreadyCreditedTp1 : tp1Gain;
@@ -1514,7 +1693,7 @@ function resolveUserOpenTradesAtPrice(
           user.equity = balanceAfter;
           user.lastBalanceSyncAt = nowIso;
           user.balanceSyncSource = 'TRADE_PNL';
-          user.tradeLog[i] = {
+          const updatedTrade: TradeLogEntry = {
             ...t,
             tp1RealizedPnl: totalPnl,
             status: 'CLOSED',
@@ -1524,6 +1703,16 @@ function resolveUserOpenTradesAtPrice(
             balanceAfter,
             notes: `${t.notes} · Runner closed at Breakeven @ $${t.entry.toFixed(spec.digits)} (${nowIso.slice(11, 19)})`,
           };
+          user.tradeLog[i] = updatedTrade;
+          notifyTelegramTpSlEvent(user, {
+            eventLabel: 'BREAKEVEN STOP HIT',
+            trade: updatedTrade,
+            price: t.entry,
+            digits: spec.digits,
+            realizedPnl: totalPnl,
+            balanceAfter,
+            note: 'Runner stopped at entry after TP1 partial',
+          });
           changed = true;
         }
       }
@@ -1558,7 +1747,7 @@ function resolveUserOpenTradesAtPrice(
       user.equity = balanceAfter;
       user.lastBalanceSyncAt = nowIso;
       user.balanceSyncSource = 'TRADE_PNL';
-      user.tradeLog[i] = {
+      const updatedTrade: TradeLogEntry = {
         ...t,
         status: nextStatus,
         closedAt: nowIso,
@@ -1567,6 +1756,15 @@ function resolveUserOpenTradesAtPrice(
         balanceAfter,
         notes: `${t.notes} · Closed ${nextStatus} @ $${exitPrice.toFixed(spec.digits)} (${nowIso.slice(11, 19)})`,
       };
+      user.tradeLog[i] = updatedTrade;
+      notifyTelegramTpSlEvent(user, {
+        eventLabel: nextStatus === 'TP_HIT' ? 'TP HIT' : 'SL HIT',
+        trade: updatedTrade,
+        price: exitPrice,
+        digits: spec.digits,
+        realizedPnl: pnlDollars,
+        balanceAfter,
+      });
       changed = true;
     }
   }
@@ -2114,6 +2312,7 @@ async function approveAndExecuteAutoTrade(params: {
     freshUser.tradeLog.unshift(tradeEntry);
     if (freshUser.tradeLog.length > 200) freshUser.tradeLog.length = 200;
     recomputeUserTradeCountsForToday(freshUser, lusakaDate);
+    notifyTelegramTradeExecution(freshUser, tradeEntry, 'Auto EMA Stochastic Pro');
     saveStoreNow();
   } catch (err) {
     console.error('[AUTO Strategy AI Approver error]', err);
@@ -2121,6 +2320,429 @@ async function approveAndExecuteAutoTrade(params: {
     pendingAiUserIds.delete(userId);
     broadcastSse('status');
   }
+}
+
+async function executeTelegramSignalForUser(
+  userId: string,
+  msg: TelegramChannelMessage
+): Promise<{
+  executionStatus: ParsedTelegramSignal['executionStatus'];
+  executionNote: string;
+  tradeId?: string | null;
+  orderId?: string | null;
+}> {
+  const user = findUserById(userId);
+  if (!user || user.status !== 'ACTIVE') {
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: 'Subscriber account is not ACTIVE.',
+    };
+  }
+  const nowMs = Date.now();
+  ensureUserDayRollover(user, nowMs);
+  const clock = getLusakaClock(nowMs);
+  const feedInfo = getProxyFeedInfo(user, nowMs);
+  const cfg = mergeEmaProConfig(user.settings.emaPro);
+
+  if (!msg.parsed.isSignal || !msg.parsed.pair || !msg.parsed.direction || msg.parsed.sl === null || msg.parsed.tp1 === null) {
+    return {
+      executionStatus: 'NOT_SIGNAL',
+      executionNote: 'Normal channel message — not traded.',
+    };
+  }
+
+  const symbol = msg.parsed.pair.toUpperCase();
+  const isGold = isGoldSymbol(symbol);
+  const isCrypto = symbol.includes('BTC') || symbol.includes('ETH');
+  const marketClosedWeekend = clock.isWeekend && !isCrypto;
+  const signalId = `tg-${msg.channelId}-${msg.telegramMessageId}`;
+
+  if (user.tradeLog.some((t) => t.signalId === signalId)) {
+    return {
+      executionStatus: 'DUPLICATE',
+      executionNote: 'Signal already processed for this account.',
+    };
+  }
+
+  if (ensureUserTelegramConfig(user).signalSource === 'STRATEGY') {
+    return {
+      executionStatus: 'IGNORED_SETTING',
+      executionNote: 'Signal source is set to Built-in Strategy only — switch to Telegram or Both to auto-trade.',
+    };
+  }
+  if (cfg.tradingMode === 'SIGNALS_ONLY') {
+    return {
+      executionStatus: 'IGNORED_SETTING',
+      executionNote: 'Trading mode is SIGNALS_ONLY — Telegram signal saved without auto-execution.',
+    };
+  }
+  if (!user.autoTradeEnabled || cfg.tradingRunState !== 'RUNNING') {
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: !user.autoTradeEnabled
+        ? 'User Auto-Trade switch is OFF.'
+        : `Trading run state is ${cfg.tradingRunState} (must be RUNNING).`,
+    };
+  }
+  if (marketClosedWeekend) {
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: 'Market closed (Weekend) — execution blocked.',
+    };
+  }
+
+  const openPositionsCount = user.tradeLog.filter((t) => t.status === 'OPEN').length;
+  if (openPositionsCount >= Math.max(1, cfg.maxSimultaneousPositions || 1)) {
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: `Max simultaneous positions (${openPositionsCount}) reached.`,
+    };
+  }
+  if (user.levels.totalTradesToday >= (user.settings.maxTradesPerDay || 5)) {
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: `Daily trade limit (${user.settings.maxTradesPerDay}) reached.`,
+    };
+  }
+  const { dailyPnlPct, dailyGuardHit } = computeUserDailyPnl(user, clock.dateLusaka);
+  if (dailyGuardHit) {
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: `Daily loss guard (${dailyPnlPct.toFixed(2)}%) triggered.`,
+    };
+  }
+
+  const quoteCtx = getLiveQuoteContext(nowMs, feedInfo);
+  const symbolSpec = getEffectiveSymbolSpecForUser(user);
+  const digits = isGold ? symbolSpec.digits : inferSymbolDigits(symbol);
+  const entryPrice =
+    msg.parsed.entry !== null
+      ? roundToDigits(msg.parsed.entry, digits)
+      : isGold
+        ? msg.parsed.direction === 'BUY'
+          ? quoteCtx.ask ?? quoteCtx.latestPrice
+          : quoteCtx.bid ?? quoteCtx.latestPrice
+        : null;
+
+  if (entryPrice === null || !Number.isFinite(entryPrice) || entryPrice <= 0) {
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: isGold
+        ? 'Live Gold Bid/Ask unavailable to resolve market entry.'
+        : 'Market signal on non-Gold pair requires an explicit numeric entry price.',
+    };
+  }
+
+  const stop = roundToDigits(msg.parsed.sl, digits);
+  const tp1 = roundToDigits(msg.parsed.tp1, digits);
+  const tp2 = roundToDigits(msg.parsed.tp2 ?? tp1, digits);
+  const tp3 = msg.parsed.tp3 !== null ? roundToDigits(msg.parsed.tp3, digits) : null;
+  const target = tp3 ?? tp2 ?? tp1;
+
+  const riskDist = Math.abs(entryPrice - stop);
+  const rewardDist = Math.abs(tp2 - entryPrice);
+  const rrRatio = riskDist > 0 ? round2(rewardDist / riskDist) : 0;
+
+  const autoLot = calculateTieredAutoLot(
+    user.balance,
+    user.settings.maxAutoLotCap ?? 0.5,
+    symbolSpec.contractSize,
+    symbolSpec.currency ?? 'USD'
+  ).effectiveLot;
+
+  let spreadEvaluation: DynamicSpreadEvaluation | null = null;
+  if (isGold) {
+    const effectiveSettings = buildEffectiveSettingsForEvaluation(user);
+    const effCfg = mergeEmaProConfig(effectiveSettings.emaPro);
+    spreadEvaluation = evaluateDynamicSpread({
+      bid: quoteCtx.bid,
+      ask: quoteCtx.ask,
+      quoteTimestamp: quoteCtx.quoteTimestamp,
+      quoteSource: quoteCtx.quoteSource,
+      hasTwoSidedQuote: quoteCtx.hasTwoSidedQuote,
+      isFallbackOnly: quoteCtx.isFallbackOnly,
+      symbolSpec,
+      spreadHistory: get24hSpreadHistory(nowMs),
+      maxSpreadPoints: effCfg.maxSpreadPips,
+      sensitivity: effCfg.spreadSensitivity,
+      allowHighSpreadTrades: effCfg.allowHighSpreadTrades,
+      minNetRewardRisk: effCfg.minNetRewardRisk,
+      estimatedSlippagePoints: effCfg.estimatedSlippagePoints,
+      maxQuoteAgeSeconds: effCfg.maxQuoteAgeSeconds,
+      confirmationScore: 85,
+      proposedSide: msg.parsed.direction,
+      proposedEntry: entryPrice,
+      proposedStop: stop,
+      proposedTarget: tp2,
+      lots: autoLot,
+      nowMs,
+    });
+    if (!spreadEvaluation.dataAvailable || !spreadEvaluation.tradePermitted) {
+      return {
+        executionStatus: 'BLOCKED',
+        executionNote: `Spread/quote gate [${spreadEvaluation.classification}]: ${spreadEvaluation.reason}`,
+      };
+    }
+  }
+
+  const estContractSize = isGold
+    ? symbolSpec.contractSize
+    : symbol.includes('BTC') || symbol.includes('ETH') || symbol.includes('SOL') || symbol.includes('XRP')
+      ? 1
+      : symbol.includes('XAG')
+        ? 5000
+        : symbol.includes('JPY') && entryPrice > 0
+          ? 100000 / entryPrice
+          : /^[A-Z]{6}$/.test(symbol)
+            ? 100000
+            : 100;
+  const riskDollarsEst = round2(riskDist * autoLot * estContractSize);
+  const tradeSignal: TradeSignal = {
+    id: signalId,
+    timestamp: new Date(nowMs).toISOString(),
+    lusakaTime: clock.timeLusaka,
+    strategy: 'ALL_SESSIONS',
+    strategyModule: 'EMA_STOCHASTIC_PRO',
+    setupType: msg.parsed.direction === 'BUY' ? 'CONTINUATION_BUY' : 'CONTINUATION_SELL',
+    setupLabel: `Telegram (${msg.channelTitle})`,
+    action: msg.parsed.direction,
+    symbol,
+    entry: entryPrice,
+    stop,
+    tp1,
+    tp2,
+    tp3,
+    target,
+    rrRatio,
+    riskDollars: riskDollarsEst,
+    suggestedLots: autoLot,
+    reason: `Telegram Signal from ${msg.channelTitle}: ${symbol} ${msg.parsed.direction} @ ${entryPrice} | SL ${stop} | TP1 ${tp1}`,
+    conditions: [
+      {
+        label: 'Telegram User API Signal',
+        passed: true,
+        detail: `${symbol} ${msg.parsed.direction} parsed from ${msg.channelTitle}`,
+      },
+      {
+        label: 'Stop Loss & Take Profit Geometry',
+        passed: true,
+        detail: `SL ${stop} / TP1 ${tp1} / R:R ${rrRatio}:1`,
+      },
+    ],
+  };
+
+  let approvalToStore = null;
+  if (user.settings.aiApproverEnabled !== false) {
+    const hist = getTickerAllHistorySnapshot();
+    const phaseRes = determineSessionPhase(clock.minutes, user.settings, marketClosedWeekend);
+    const newsStatus = evaluateUsdNewsClearance(clock.minutes, user.settings);
+    const m5Combined = isGold
+      ? mergeCandleCollections(hist.m5Candles, proxyMarketState.closedM5Candles)
+      : [];
+    const m15Combined = isGold
+      ? mergeCandleCollections(hist.m15Candles, proxyMarketState.closedCandles)
+      : [];
+    const emaEval = isGold
+      ? evaluateEmaStochasticProSignal({
+          h1Candles: hist.h1Candles,
+          m15Candles: m15Combined,
+          m5Candles: m5Combined,
+          m1Candles: hist.m1Candles,
+          settings: buildEffectiveSettingsForEvaluation(user),
+          levels: user.levels,
+          phase: phaseRes.phase,
+          latestPrice: quoteCtx.latestPrice,
+          bid: quoteCtx.bid,
+          ask: quoteCtx.ask,
+          quoteTimestamp: quoteCtx.quoteTimestamp,
+          quoteSource: quoteCtx.quoteSource,
+          hasTwoSidedQuote: quoteCtx.hasTwoSidedQuote,
+          isFallbackOnly: quoteCtx.isFallbackOnly,
+          symbolSpec,
+          spreadHistory: get24hSpreadHistory(nowMs),
+          spreadEvaluation,
+          accountEquity: user.equity > 0 ? user.equity : user.balance,
+          openPositionsCount,
+          dailyPnlPct,
+          isWeekend: marketClosedWeekend,
+          feedConnected: feedInfo.isLive,
+          nowMs,
+        })
+      : null;
+
+    const aiResult = await reviewTradeWithGeminiApprover({
+      executionContext: 'AUTO',
+      lusakaDate: clock.dateLusaka,
+      lusakaTime: clock.timeLusaka,
+      lusakaWeekday: clock.weekday,
+      isWeekend: marketClosedWeekend,
+      phase: phaseRes.phase,
+      symbol,
+      proposedSide: msg.parsed.direction,
+      entry: entryPrice,
+      stop,
+      tp1,
+      tp2,
+      tp3,
+      lots: autoLot,
+      accountBalance: user.equity > 0 ? user.equity : user.balance,
+      settings: buildEffectiveSettingsForEvaluation(user),
+      levels: user.levels,
+      emaPro: emaEval?.analysis ?? null,
+      activeSignal: tradeSignal,
+      newsStatus,
+      currentCandle: isGold
+        ? proxyMarketState.currentM5Candle ?? proxyMarketState.currentCandle
+        : null,
+      recentClosedCandles: isGold ? m5Combined.slice(-12).reverse() : [],
+      dailyPnlPct,
+      dailyGuardHit,
+      openPositionsCount,
+      lastTickAtMs: isGold ? state.lastAnyFeedSuccessMs || null : null,
+      notes: tradeSignal.reason,
+    });
+
+    const freshUser = findUserById(userId);
+    if (!freshUser) {
+      return { executionStatus: 'BLOCKED', executionNote: 'User account no longer active.' };
+    }
+    freshUser.lastAiApproval = aiResult.approval;
+    approvalToStore = aiResult.approval;
+
+    if (!aiResult.ok || !aiResult.approval.approved) {
+      const blockReason =
+        aiResult.approval.status === 'ERROR'
+          ? `Gemini AI Error: ${aiResult.approval.errorMessage || aiResult.approval.summary}`
+          : `Gemini AI ${aiResult.approval.status} (${aiResult.approval.confidencePct}%): ${aiResult.approval.summary}`;
+      freshUser.signalHistory.unshift({
+        id: `hist-tg-aiblk-${signalId}`,
+        timestamp: new Date().toISOString(),
+        lusakaTime: clock.timeLusaka,
+        strategy: 'ALL_SESSIONS',
+        strategyModule: 'EMA_STOCHASTIC_PRO',
+        action: 'BLOCKED',
+        symbol,
+        price: entryPrice,
+        stop,
+        tp1,
+        tp2,
+        tp3,
+        aiConfidence: aiResult.approval.confidencePct,
+        signalStatus:
+          aiResult.approval.status === 'WAITING FOR CONFIRMATION' ? 'WAITING' : 'REJECTED',
+        setupStatus: `Telegram (${msg.channelTitle})`,
+        blockReason,
+      });
+      if (freshUser.signalHistory.length > 120) freshUser.signalHistory.length = 120;
+      saveStoreNow();
+      return {
+        executionStatus: 'BLOCKED',
+        executionNote: blockReason,
+      };
+    }
+  }
+
+  const freshUser = findUserById(userId);
+  if (!freshUser) {
+    return { executionStatus: 'BLOCKED', executionNote: 'User account no longer active.' };
+  }
+
+  const feedReady = isGold
+    ? feedInfo.isLive
+    : Boolean(feedInfo.isLive || (freshUser.brokerConnected && freshUser.brokerBridgeUrl.trim()) || freshUser.accountType === 'Demo');
+
+  const orderRec = await executeTradeViaTickerAllAdapter({
+    user: freshUser,
+    signal: tradeSignal,
+    latestMarketPrice: isGold ? quoteCtx.latestPrice : entryPrice,
+    latestTick: isGold ? quoteCtx.tick : null,
+    symbolSpec,
+    spreadEvaluation: isGold ? spreadEvaluation : null,
+    feedConnected: feedReady,
+    isWeekend: clock.isWeekend && !symbol.includes('BTC') && !symbol.includes('ETH'),
+    nowMs,
+  });
+
+  freshUser.tradeOrders = [orderRec, ...(freshUser.tradeOrders ?? [])].slice(0, 120);
+
+  if (orderRec.status !== 'FILLED' && orderRec.status !== 'DEMO_SIMULATED') {
+    const note = `${orderRec.status}: ${orderRec.errorMessage || 'Order rejected by execution gate'}`;
+    freshUser.signalHistory.unshift({
+      id: `hist-tg-execblk-${signalId}`,
+      timestamp: new Date().toISOString(),
+      lusakaTime: clock.timeLusaka,
+      strategy: 'ALL_SESSIONS',
+      strategyModule: 'EMA_STOCHASTIC_PRO',
+      action: 'BLOCKED',
+      symbol,
+      price: entryPrice,
+      stop,
+      tp1,
+      tp2,
+      tp3,
+      aiConfidence: approvalToStore?.confidencePct ?? null,
+      signalStatus: 'REJECTED',
+      setupStatus: `Telegram (${msg.channelTitle})`,
+      blockReason: note,
+    });
+    if (freshUser.signalHistory.length > 120) freshUser.signalHistory.length = 120;
+    saveStoreNow();
+    return {
+      executionStatus: 'BLOCKED',
+      executionNote: note,
+      orderId: orderRec.id,
+    };
+  }
+
+  const execEntry = orderRec.actualFillPrice ?? entryPrice;
+  const tradeEntry: TradeLogEntry = {
+    id: `auto-tg-${msg.channelId}-${msg.telegramMessageId}`,
+    signalId,
+    orderId: orderRec.id,
+    dateLusaka: clock.dateLusaka,
+    timeLusaka: clock.timeLusaka,
+    timestamp: new Date(nowMs).toISOString(),
+    session: 'ALL_SESSIONS',
+    strategyModule: 'EMA_STOCHASTIC_PRO',
+    symbol,
+    side: msg.parsed.direction,
+    entry: execEntry,
+    stop,
+    tp1,
+    tp2,
+    tp3,
+    target,
+    tp1Hit: false,
+    tp2Hit: false,
+    breakevenMoved: false,
+    rrRatio,
+    lots: autoLot,
+    riskDollars: riskDollarsEst,
+    status: 'OPEN',
+    executionStatus: orderRec.status,
+    exitPrice: null,
+    pnlDollars: null,
+    notes: `AUTO TELEGRAM (${msg.channelTitle}) (${orderRec.status}) via ${freshUser.brokerName} (#${freshUser.mt5Login})${approvalToStore ? ` · AI ${approvalToStore.confidencePct}%` : ''}`,
+    setupStatus: `Telegram (${msg.channelTitle})`,
+    executionMode: 'AUTO',
+    feedSource: `Telegram User API (${msg.channelTitle})`,
+    brokerName: `${freshUser.brokerName} (${freshUser.accountType})`,
+    balanceBefore: round2(freshUser.balance),
+    balanceAfter: null,
+    aiApproval: approvalToStore,
+  };
+  freshUser.tradeLog.unshift(tradeEntry);
+  if (freshUser.tradeLog.length > 200) freshUser.tradeLog.length = 200;
+  recomputeUserTradeCountsForToday(freshUser, clock.dateLusaka);
+  notifyTelegramTradeExecution(freshUser, tradeEntry, `Telegram Channel (${msg.channelTitle})`);
+  saveStoreNow();
+
+  return {
+    executionStatus: 'EXECUTED',
+    executionNote: `${orderRec.status} (${symbol} ${msg.parsed.direction} @ ${execEntry}, ${autoLot} lots)`,
+    tradeId: tradeEntry.id,
+    orderId: orderRec.id,
+  };
 }
 
 function evaluateUserOnProxyTick(user: StoredUser, price: number | null, nowMs: number) {
@@ -2278,9 +2900,11 @@ function evaluateUserOnProxyTick(user: StoredUser, price: number | null, nowMs: 
     }
 
     const canAutoMode = cfg.tradingMode === 'AUTOMATIC_TRADING' || cfg.tradingMode === 'BOTH';
+    const activeSignalSource = ensureUserTelegramConfig(user).signalSource || 'BOTH';
 
     if (
       canAutoMode &&
+      activeSignalSource !== 'TELEGRAM' &&
       user.autoTradeEnabled &&
       isBrokerSetupComplete(user.brokerSetup) &&
       !hasWrongBrokerSetup(user.brokerSetup) &&
@@ -5029,7 +5653,7 @@ async function startServer() {
         timestamp: new Date().toISOString(),
         actor: user.fullName || user.id,
         action: 'SETTINGS_UPDATED',
-        detail: `Strategy: ${nextMode} · Mode: ${nextEmaPro.tradingMode} · Risk: ${user.settings.riskPercent}% · AI Threshold: ${nextEmaPro.aiConfidenceThreshold}`,
+        detail: `Strategy: ${nextMode} · Mode: ${nextEmaPro.tradingMode} · Risk: ${user.settings.riskPercent}% · AI Threshold: ${nextEmaPro.aiConfidenceThreshold} · TG Alerts: Exec ${nextEmaPro.telegramNotifyExecutions ? 'ON' : 'OFF'}, TP/SL ${nextEmaPro.telegramNotifyTpSl ? 'ON' : 'OFF'}`,
       },
       ...(user.auditLogs ?? []),
     ].slice(0, 100);
@@ -5741,11 +6365,14 @@ async function startServer() {
     recomputeUserTradeCountsForToday(user, clock.dateLusaka);
     if (newEntry.status === 'OPEN') {
       recomputeUserFloatingEquity(user, getEffectiveProxyPrice());
+      notifyTelegramTradeExecution(
+        user,
+        newEntry,
+        newEntry.executionMode === 'AUTO' ? 'Auto Execution' : 'Manual Execution'
+      );
     }
-    saveStoreNow();
-    broadcastSse('status');
     if (newEntry.status === 'OPEN' && user.brokerConnected && user.brokerBridgeUrl.trim()) {
-      void dispatchOrderToUserBroker(user, {
+      const dispatchRes = await dispatchOrderToUserBroker(user, {
         symbol: newEntry.symbol || manualSpec.symbol || 'GOLD',
         side: newEntry.side,
         lots: newEntry.lots,
@@ -5753,7 +6380,52 @@ async function startServer() {
         stop: newEntry.stop,
         target: newEntry.target,
       });
+      const orderRec: TradeOrderRecord = {
+        id: `ord-man-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        signalId: newEntry.signalId || newEntry.id,
+        idempotencyKey: `${user.id}:${newEntry.id}`,
+        timestamp: new Date().toISOString(),
+        lusakaTime: clock.timeLusaka,
+        symbol: newEntry.symbol || manualSpec.symbol || 'XAUUSD',
+        side: newEntry.side,
+        requestedEntry: newEntry.entry,
+        actualFillPrice: dispatchRes.sent ? newEntry.entry : null,
+        lots: newEntry.lots,
+        stop: newEntry.stop,
+        tp1: newEntry.tp1 ?? null,
+        tp2: newEntry.tp2 ?? null,
+        tp3: newEntry.tp3 ?? null,
+        status: dispatchRes.sent ? 'FILLED' : 'REJECTED',
+        brokerOrderId: dispatchRes.sent ? `BRG-${Date.now()}` : null,
+        environment: user.accountType === 'Live' ? 'LIVE' : 'DEMO',
+        adapterUsed: 'BROKER_BRIDGE',
+        errorMessage: dispatchRes.sent ? null : dispatchRes.detail,
+      };
+      user.tradeOrders = [orderRec, ...(user.tradeOrders ?? [])].slice(0, 120);
+      const savedIdx = user.tradeLog.findIndex((t) => t.id === newEntry.id);
+      if (savedIdx !== -1) {
+        user.tradeLog[savedIdx] = {
+          ...user.tradeLog[savedIdx],
+          orderId: orderRec.id,
+          executionStatus: dispatchRes.sent ? 'FILLED' : 'REJECTED',
+        };
+      }
+      if (!dispatchRes.sent) {
+        user.notifications = [
+          {
+            id: `notif-man-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            level: 'WARNING' as const,
+            title: 'Manual Broker Dispatch Failed',
+            detail: dispatchRes.detail,
+            read: false,
+          },
+          ...(user.notifications ?? []),
+        ].slice(0, 80);
+      }
     }
+    saveStoreNow();
+    broadcastSse('status');
     res.json(getUserSnapshot(user));
   });
 
@@ -5829,7 +6501,7 @@ async function startServer() {
       balanceAfter = user.balance;
     }
 
-    user.tradeLog[idx] = {
+    const updatedTrade: TradeLogEntry = {
       ...existing,
       status: nextStatus,
       ...(nextStatus !== 'OPEN' && nextStatus !== 'SIGNALED' && !existing.closedAt
@@ -5841,6 +6513,27 @@ async function startServer() {
       balanceAfter,
       notes: typeof body.notes === 'string' ? body.notes : existing.notes,
     };
+    user.tradeLog[idx] = updatedTrade;
+    if (
+      existing.status !== nextStatus &&
+      (nextStatus === 'TP_HIT' || nextStatus === 'SL_HIT' || nextStatus === 'CLOSED')
+    ) {
+      notifyTelegramTpSlEvent(user, {
+        eventLabel:
+          nextStatus === 'TP_HIT'
+            ? 'TP HIT'
+            : nextStatus === 'SL_HIT'
+              ? 'SL HIT'
+              : 'TRADE CLOSED',
+        trade: updatedTrade,
+        price: nextExit ?? updatedTrade.entry,
+        digits: isGoldSymbol(updatedTrade.symbol)
+          ? tradeSpec.digits
+          : inferSymbolDigits(updatedTrade.symbol),
+        realizedPnl: pnlDollars ?? null,
+        balanceAfter: balanceAfter ?? user.balance,
+      });
+    }
     recomputeUserTradeCountsForToday(user, getLusakaClock().dateLusaka);
     saveStoreNow();
     broadcastSse('status');
@@ -6015,6 +6708,173 @@ async function startServer() {
 
   app.post('/api/backtest/refresh', (req: Request, res: Response) => {
     void handleRealBacktestRequest(req, res, true);
+  });
+
+  // --- TELEGRAM USER API SIGNAL LISTENER ROUTES (/api/telegram/*) ---
+  app.get('/api/telegram/state', (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    res.json({
+      ok: true,
+      telegram: getTelegramPublicState(user),
+      snapshot: getUserSnapshot(user),
+    });
+  });
+
+  app.post('/api/telegram/config', (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    if (user.status !== 'ACTIVE') {
+      res.status(403).json({ ok: false, error: 'Active subscription required' });
+      return;
+    }
+    const body = (req.body || {}) as {
+      apiId?: string;
+      apiHash?: string;
+      phoneNumber?: string;
+      channelTarget?: string;
+      autoExecuteSignals?: boolean;
+      signalSource?: SignalSourceMode;
+    };
+    const telegram = saveTelegramConfigForUser(user, body);
+    res.json({
+      ok: true,
+      telegram,
+      snapshot: getUserSnapshot(user),
+    });
+  });
+
+  app.post('/api/telegram/connect', async (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    if (user.status !== 'ACTIVE') {
+      res.status(403).json({ ok: false, error: 'Active subscription required' });
+      return;
+    }
+    const body = (req.body || {}) as {
+      apiId?: string;
+      apiHash?: string;
+      phoneNumber?: string;
+      channelTarget?: string;
+      autoExecuteSignals?: boolean;
+    };
+    if (
+      typeof body.apiId === 'string' ||
+      typeof body.apiHash === 'string' ||
+      typeof body.phoneNumber === 'string' ||
+      typeof body.channelTarget === 'string' ||
+      typeof body.autoExecuteSignals === 'boolean'
+    ) {
+      saveTelegramConfigForUser(user, body);
+    }
+    const result = await connectTelegramUser(user);
+    res.status(result.ok ? 200 : 400).json({
+      ...result,
+      snapshot: getUserSnapshot(user),
+    });
+  });
+
+  app.post('/api/telegram/verify', async (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    if (user.status !== 'ACTIVE') {
+      res.status(403).json({ ok: false, error: 'Active subscription required' });
+      return;
+    }
+    const body = (req.body || {}) as { code?: string; password?: string };
+    const result = await verifyTelegramUserCode(user, body);
+    res.status(result.ok ? 200 : 400).json({
+      ...result,
+      snapshot: getUserSnapshot(user),
+    });
+  });
+
+  app.post('/api/telegram/start', async (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    if (user.status !== 'ACTIVE') {
+      res.status(403).json({ ok: false, error: 'Active subscription required' });
+      return;
+    }
+    const body = (req.body || {}) as {
+      channelTarget?: string;
+      autoExecuteSignals?: boolean;
+    };
+    if (
+      typeof body.channelTarget === 'string' ||
+      typeof body.autoExecuteSignals === 'boolean'
+    ) {
+      saveTelegramConfigForUser(user, body);
+    }
+    const result = await startListeningTelegramUser(user);
+    res.status(result.ok ? 200 : 400).json({
+      ...result,
+      snapshot: getUserSnapshot(user),
+    });
+  });
+
+  app.post('/api/telegram/stop', (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    const result = stopListeningTelegramUser(user);
+    res.json({
+      ...result,
+      snapshot: getUserSnapshot(user),
+    });
+  });
+
+  app.post('/api/telegram/disconnect', async (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    const clearSession = Boolean((req.body as { clearSession?: boolean } | undefined)?.clearSession);
+    const result = await disconnectTelegramUser(user, clearSession);
+    res.json({
+      ...result,
+      snapshot: getUserSnapshot(user),
+    });
+  });
+
+  app.post('/api/telegram/test-notification', async (req: Request, res: Response) => {
+    const user = getAuthenticatedUser(req);
+    if (!user) {
+      res.status(401).json({ ok: false, error: 'Login required' });
+      return;
+    }
+    if (user.status !== 'ACTIVE') {
+      res.status(403).json({ ok: false, error: 'Active subscription required' });
+      return;
+    }
+    const clk = getLusakaClock(Date.now());
+    const cfg = mergeEmaProConfig(user.settings.emaPro);
+    const msg = [
+      'GOLD AI TRADER — TEST ALERT',
+      `Execution Alerts: ${cfg.telegramNotifyExecutions ? 'ENABLED' : 'DISABLED'}`,
+      `TP/SL Hit Alerts: ${cfg.telegramNotifyTpSl ? 'ENABLED' : 'DISABLED'}`,
+      `Account: ${user.brokerName} (${user.accountType}) | Time: ${clk.timeLusaka} CAT`,
+    ].join('\n');
+    const result = await sendTelegramPushMessage(user, msg);
+    res.status(result.ok ? 200 : 400).json(result);
   });
 
   app.get('/api/feed/stream', (req: Request, res: Response) => {
@@ -6695,6 +7555,11 @@ async function startServer() {
     if (bootStore.tickerAllMaster.desiredConnected && !getLusakaClock().isWeekend) {
       void ensureMasterFeedConnected(true);
     }
+    registerTelegramHooks({
+      onStateChange: () => broadcastSse('status'),
+      onSignalReceived: executeTelegramSignalForUser,
+    });
+    void resumeTelegramListenersOnBoot();
     let lastBridgeSyncCycleMs = 0;
     proxyMarketState.clockTimer = setInterval(() => {
       const nowMs = Date.now();
@@ -6764,6 +7629,7 @@ async function startServer() {
     }
     stopStreamLoop();
     stopFallbackLoop();
+    void shutdownAllTelegramClients();
     for (const clientRes of sseClients.keys()) {
       try {
         clientRes.end();

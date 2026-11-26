@@ -14,6 +14,12 @@ import { mergeEmaProConfig } from '../src/utils/emaStochasticPro.ts';
 import { getLusakaClock, round2 } from '../src/utils/strategyEngine.ts';
 import type { StoredUser } from './businessStore.ts';
 import { isSafeExternalUrl } from './urlSafety.ts';
+import { inferSymbolDigits } from '../src/utils/telegramSignalParser.ts';
+
+function isGoldLikeSymbol(symbol: string | null | undefined): boolean {
+  const upper = (symbol || 'XAUUSD').toUpperCase();
+  return upper.includes('XAU') || upper.includes('GOLD');
+}
 
 const processedIdempotencyKeys = new Map<string, TradeOrderRecord>();
 
@@ -86,8 +92,11 @@ export function validateExecutionGate(params: {
     }
   }
 
-  // Fresh MT5 Bid/Ask quote, exact symbol specs & dynamic spread / net R:R mandatory pre-trade checks
-  if (latestTick) {
+  const effectiveSymbol = signal.symbol || symbolSpec?.symbol || cfg.xauusdSymbol || 'XAUUSD';
+  const isGold = isGoldLikeSymbol(effectiveSymbol);
+
+  // Fresh MT5 Bid/Ask quote, exact symbol specs & dynamic spread / net R:R mandatory pre-trade checks (Gold/XAUUSD)
+  if (isGold && latestTick) {
     if (!latestTick.hasTwoSidedQuote || latestTick.bid <= 0 || latestTick.ask <= 0 || latestTick.ask < latestTick.bid) {
       return {
         allowed: false,
@@ -109,7 +118,7 @@ export function validateExecutionGate(params: {
     }
   }
 
-  if (spreadEvaluation) {
+  if (isGold && spreadEvaluation) {
     if (!spreadEvaluation.dataAvailable || spreadEvaluation.classification === 'DATA_UNAVAILABLE') {
       return {
         allowed: false,
@@ -134,13 +143,17 @@ export function validateExecutionGate(params: {
     }
   }
 
-  const digits = symbolSpec?.digits ?? latestTick?.digits ?? 2;
-  const sideReferencePrice =
-    latestTick && latestTick.hasTwoSidedQuote
+  const digits = isGold
+    ? symbolSpec?.digits ?? latestTick?.digits ?? 2
+    : inferSymbolDigits(effectiveSymbol);
+  const sideReferencePrice = isGold
+    ? latestTick && latestTick.hasTwoSidedQuote
       ? getEffectiveSideEntryPrice(signal.action, latestTick.bid, latestTick.ask, latestMarketPrice, digits)
-      : latestMarketPrice;
+      : latestMarketPrice
+    : signal.entry;
 
   if (
+    isGold &&
     sideReferencePrice !== null &&
     signal.entry !== null &&
     Number.isFinite(sideReferencePrice)
@@ -194,8 +207,14 @@ export async function executeTradeViaTickerAllAdapter(params: {
   } = params;
   const cfg = mergeEmaProConfig(user.settings.emaPro);
   const clk = getLusakaClock(nowMs);
-  const symbol = symbolSpec?.symbol || cfg.xauusdSymbol || 'XAUUSD';
-  const digits = symbolSpec?.digits ?? latestTick?.digits ?? 2;
+  const requestedSymbol = (signal.symbol || '').trim();
+  const isGold = isGoldLikeSymbol(requestedSymbol || symbolSpec?.symbol || cfg.xauusdSymbol);
+  const symbol = isGold
+    ? symbolSpec?.symbol || cfg.xauusdSymbol || 'XAUUSD'
+    : requestedSymbol || 'EURUSD';
+  const digits = isGold
+    ? symbolSpec?.digits ?? latestTick?.digits ?? 2
+    : inferSymbolDigits(symbol);
   const side: 'BUY' | 'SELL' = signal.action === 'SELL' ? 'SELL' : 'BUY';
   const idempotencyKey = `${user.id}:${signal.id}`;
 
@@ -205,10 +224,12 @@ export async function executeTradeViaTickerAllAdapter(params: {
     return existing;
   }
 
-  // Use Ask for BUY execution and Bid for SELL execution
-  const sideFillQuote = latestTick
-    ? getEffectiveSideEntryPrice(side, latestTick.bid, latestTick.ask, latestMarketPrice, digits)
-    : latestMarketPrice;
+  // Use Ask for BUY execution and Bid for SELL execution on Gold, or signal entry on non-Gold pairs
+  const sideFillQuote = isGold
+    ? latestTick
+      ? getEffectiveSideEntryPrice(side, latestTick.bid, latestTick.ask, latestMarketPrice, digits)
+      : latestMarketPrice
+    : signal.entry;
   const requestedEntry = roundToDigits(sideFillQuote ?? signal.entry ?? 0, digits);
   const stop = roundToDigits(signal.stop ?? requestedEntry, digits);
   const tp1 = signal.tp1 !== null ? roundToDigits(signal.tp1, digits) : null;

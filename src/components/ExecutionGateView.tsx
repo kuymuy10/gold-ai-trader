@@ -14,6 +14,14 @@ import type {
   UserPublicProfile,
 } from '../types/connectivity';
 import { mergeEmaProConfig } from '../utils/emaStochasticPro';
+import { inferSymbolDigits } from '../utils/telegramSignalParser';
+
+function formatSymbolPrice(val: number, symbol?: string | null): string {
+  const sym = (symbol || 'XAUUSD').toUpperCase();
+  const isGold = sym.includes('XAU') || sym.includes('GOLD');
+  const digits = inferSymbolDigits(sym);
+  return isGold ? `$${val.toFixed(digits)}` : val.toFixed(digits);
+}
 
 interface BotDiagnosticsPayload {
   ok: boolean;
@@ -463,6 +471,7 @@ export function ExecutionGateView({
               <table className="w-full text-[11px] font-mono tabular-nums">
                 <thead>
                   <tr className="text-left text-slate-400 border-b border-white/8">
+                    <th className="py-1.5 pr-2">Pair</th>
                     <th className="py-1.5 pr-2">Side</th>
                     <th className="py-1.5 pr-2">Lots</th>
                     <th className="py-1.5 pr-2">Entry</th>
@@ -473,15 +482,16 @@ export function ExecutionGateView({
                 <tbody className="divide-y divide-white/6">
                   {openPositions.map((pos) => (
                     <tr key={pos.id}>
+                      <td className="py-2 pr-2 text-slate-200 font-semibold">{pos.symbol || 'XAUUSD'}</td>
                       <td className={`py-2 pr-2 font-bold ${pos.side === 'BUY' ? 'text-emerald-300' : 'text-red-300'}`}>
                         {pos.side}
                       </td>
                       <td className="py-2 pr-2 text-slate-200">{pos.lots.toFixed(2)}</td>
-                      <td className="py-2 pr-2 text-slate-100">${pos.entry.toFixed(2)}</td>
-                      <td className="py-2 pr-2 text-red-300">${pos.stop.toFixed(2)}</td>
+                      <td className="py-2 pr-2 text-slate-100">{formatSymbolPrice(pos.entry, pos.symbol)}</td>
+                      <td className="py-2 pr-2 text-red-300">{formatSymbolPrice(pos.stop, pos.symbol)}</td>
                       <td className="py-2 text-slate-300">
-                        TP1 {pos.tp1 ? `$${pos.tp1.toFixed(2)}` : '—'} · TP2 {pos.tp2 ? `$${pos.tp2.toFixed(2)}` : '—'}
-                        {pos.tp3 != null ? ` · TP3 $${pos.tp3.toFixed(2)}` : ''}
+                        TP1 {pos.tp1 ? formatSymbolPrice(pos.tp1, pos.symbol) : '—'} · TP2 {pos.tp2 ? formatSymbolPrice(pos.tp2, pos.symbol) : '—'}
+                        {pos.tp3 != null ? ` · TP3 ${formatSymbolPrice(pos.tp3, pos.symbol)}` : ''}
                       </td>
                     </tr>
                   ))}
@@ -501,7 +511,7 @@ export function ExecutionGateView({
                   className="px-2.5 py-1.5 rounded border border-white/6 bg-[#0B0F17] flex items-center justify-between text-[11px] font-mono"
                 >
                   <span className="text-slate-200">
-                    {ord.lusakaTime} · {ord.side} {ord.symbol} {ord.lots.toFixed(2)} @ ${ord.requestedEntry.toFixed(2)}
+                    {ord.lusakaTime} · {ord.side} {ord.symbol} {ord.lots.toFixed(2)} @ {formatSymbolPrice(ord.requestedEntry, ord.symbol)}
                   </span>
                   <span
                     className={

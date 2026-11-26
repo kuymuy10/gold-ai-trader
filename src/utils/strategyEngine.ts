@@ -67,6 +67,8 @@ export const DEFAULT_STRATEGY_SETTINGS: StrategySettings = {
     tradingMode: 'SIGNALS_ONLY',
     tradingRunState: 'RUNNING',
     settingsVersion: 1,
+    telegramNotifyExecutions: true,
+    telegramNotifyTpSl: true,
   },
   newsEvents: [
     {
@@ -405,3 +407,26 @@ export function derivePreviousDayRangeFromCandles(
     prevDayDate: latestPrevDate,
   };
 }
+
+export function isThreeTargetStopHit(params: {
+  side: 'BUY' | 'SELL';
+  price: number;
+  stop: number;
+  tp1: number;
+  tp2: number;
+  tp1Hit: boolean;
+  tp2Hit: boolean;
+  pointSize?: number;
+}): boolean {
+  const { side, price, stop, tp1, tp2, tp1Hit, tp2Hit, pointSize = 0.01 } = params;
+  const isBuy = side === 'BUY';
+  const epsilon = Math.max(pointSize * 0.5, 1e-6);
+  const trailedToTarget =
+    (tp1Hit && Math.abs(stop - tp1) <= epsilon) ||
+    (tp2Hit && Math.abs(stop - tp2) <= epsilon);
+  if (trailedToTarget) {
+    return isBuy ? price < stop : price > stop;
+  }
+  return isBuy ? price <= stop : price >= stop;
+}
+

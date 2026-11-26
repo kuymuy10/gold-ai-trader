@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Cloud,
   KeyRound,
+  Radio,
 } from 'lucide-react';
 import type { User as FirebaseUser } from 'firebase/auth';
 import type {
@@ -19,6 +20,7 @@ import type {
   ConnectionSnapshot,
   DaySessionLevels,
   PublicBusinessConfig,
+  SignalSourceMode,
   StrategySettings,
   TradeLogEntry,
   UserPublicProfile,
@@ -39,11 +41,12 @@ import { TradeLogView } from './components/TradeLogView';
 import { AuthGateScreen } from './components/AuthGateScreen';
 import { AdminDashboard } from './components/AdminDashboard';
 import { BrokerConnectionView } from './components/BrokerConnectionView';
+import { TelegramListenerView } from './components/TelegramListenerView';
 import { TopNavBar, type TopNavSection } from './components/TopNavBar';
 import { saveM15Candles, loadSavedM15Candles } from './utils/strategyStorage';
 import { getLusakaClock } from './utils/strategyEngine';
 
-type NavTab = 'bot' | 'trades' | 'settings' | 'connections' | 'gate';
+type NavTab = 'bot' | 'trades' | 'telegram' | 'settings' | 'connections' | 'gate';
 
 const NAV_ITEMS: Array<{
   id: NavTab;
@@ -62,6 +65,12 @@ const NAV_ITEMS: Array<{
     label: 'Trade Log',
     breadcrumb: 'Trade Log',
     icon: ClipboardList,
+  },
+  {
+    id: 'telegram',
+    label: 'Telegram Signals',
+    breadcrumb: 'Telegram Channel Listener',
+    icon: Radio,
   },
   {
     id: 'settings',
@@ -819,6 +828,33 @@ export default function App() {
     }
   };
 
+  const handleSwitchSignalSource = async (
+    signalSource: SignalSourceMode
+  ): Promise<{ ok: boolean; error?: string }> => {
+    try {
+      const res = await fetch('/api/telegram/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ signalSource }),
+      });
+      const json = (await res.json()) as {
+        ok?: boolean;
+        error?: string;
+        snapshot?: ConnectionSnapshot;
+      };
+      if (json.snapshot) {
+        setSnapshot(json.snapshot);
+        if (json.snapshot.userProfile) setAuthUser(json.snapshot.userProfile);
+      }
+      return {
+        ok: Boolean(res.ok && json.ok),
+        error: json.error,
+      };
+    } catch {
+      return { ok: false, error: 'Network error updating signal source' };
+    }
+  };
+
   const handleChangePinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setChangePinError(null);
@@ -1319,6 +1355,7 @@ export default function App() {
                   onToggleAutoTrade={handleToggleAutoTrade}
                   onSyncBrokerBalance={handleSyncBrokerBalance}
                   onBotControl={handleBotControl}
+                  onSwitchSignalSource={handleSwitchSignalSource}
                   onNavigateTab={(tab) => setActiveTab(tab)}
                 />
               )}
@@ -1331,6 +1368,18 @@ export default function App() {
                   onDeleteTrade={handleDeleteTrade}
                   onClearTrades={handleClearTrades}
                   onClearSignals={handleClearSignals}
+                />
+              )}
+
+              {activeTab === 'telegram' && (
+                <TelegramListenerView
+                  snapshot={snapshot}
+                  onSnapshotUpdated={(next) => {
+                    setSnapshot(next);
+                    if (next.userProfile) setAuthUser(next.userProfile);
+                  }}
+                  onSwitchSignalSource={handleSwitchSignalSource}
+                  onNavigateBot={() => setActiveTab('bot')}
                 />
               )}
 
